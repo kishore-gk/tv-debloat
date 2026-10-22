@@ -3054,7 +3054,9 @@ class MainActivity : Activity() {
 
     /** Benchmark switches from adb (see Debug); true when they changed, so the screen is rebuilt with them. */
     private fun readDebug(i: Intent?): Boolean {
-        val raw = i?.getStringExtra("plume_dbg") ?: return false
+        // Kept in prefs, so the choice survives restarts until changed again ("none" turns everything back on).
+        val raw = i?.getStringExtra("plume_dbg") ?: prefs.getString("dbg", null) ?: return false
+        prefs.edit().putString("dbg", raw).apply()
         val flags = raw.split(',').map { it.trim() }.filter { it.isNotEmpty() && it != "none" }.toSet()
         if (flags == Debug.flags) return false
         Debug.flags = flags
