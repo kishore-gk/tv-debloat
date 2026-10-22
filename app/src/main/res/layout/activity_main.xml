@@ -254,10 +254,18 @@
                 android:layout_height="wrap_content"
                 android:clipToPadding="false"
                 android:paddingStart="24dp"
-                android:paddingTop="20dp"
+                android:paddingTop="22dp"
                 android:paddingEnd="24dp"
                 android:paddingBottom="6dp"
                 android:scrollbars="none">
+
+                <!-- The focus lens (added in code) sits behind the rows, so it scrolls with them. -->
+                <FrameLayout
+                    android:id="@+id/lensLayer"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:clipChildren="false"
+                    android:clipToPadding="false">
 
                 <LinearLayout
                     android:layout_width="wrap_content"
@@ -293,6 +301,7 @@
                         android:orientation="horizontal"
                         android:visibility="gone" />
                 </LinearLayout>
+                </FrameLayout>
             </dev.plume.SnapScrollView>
         </FrameLayout>
     </FrameLayout>

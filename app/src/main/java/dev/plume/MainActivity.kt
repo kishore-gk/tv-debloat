@@ -213,6 +213,7 @@ class MainActivity : Activity() {
     private lateinit var glass: GlassView
     private lateinit var shelf: LinearLayout
     private lateinit var dock: FrameLayout
+    private lateinit var lens: FocusLens
     private val appsTitle by lazy { findViewById<TextView>(R.id.appsTitle) }
     // Glass layout state: the wallpaper (shown when there's nothing to continue), the Top Shelf position, and the
     // last Left/Right press (dock tiles tilt in from that side).
@@ -1498,7 +1499,7 @@ class MainActivity : Activity() {
      * centred, the scroller would push its first tiles out of reach.
      */
     private fun alignRow() {
-        val content = appRow.parent as View
+        val content = findViewById<View>(R.id.lensLayer) // the scroller's child: rows plus the focus lens
         (content.layoutParams as FrameLayout.LayoutParams).gravity =
             if (appTileCount() > DOCK_FIT) Gravity.START else ROW_ALIGN[rowAlign()]!!.second
         content.requestLayout()
@@ -1527,8 +1528,10 @@ class MainActivity : Activity() {
                 own.onFocusChange(v, focused)
                 if (focused) lastApp = v
                 showRowLabel(v, focused)
+                moveLens(v, focused)
             }
         }
+        lens.layoutParams = FrameLayout.LayoutParams(width + dp(LENS_PAD) * 2, width * 9 / 16 + dp(LENS_PAD) * 2)
         showNames()
         alignRow()
         if (takeFocus) (tiles.firstOrNull { it.tag == focusedTag } ?: tiles[0]).requestFocus()
@@ -1916,6 +1919,7 @@ class MainActivity : Activity() {
         moveOnce = once
         appsTitle.text = if (once) getString(R.string.moving_hint) else getString(R.string.editing_hint)
         appsTitle.visibility = View.VISIBLE
+        lens.hide()
         (grab ?: appRow.getChildAt(0)).requestFocus()
         setGrabbed(grab)
     }
@@ -2647,6 +2651,8 @@ class MainActivity : Activity() {
         dock.addView(glass, 0, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         Glass.round(dock, radius)
         dock.foreground = Glass.rim(radius, resources.displayMetrics.density)
+        lens = FocusLens(this)
+        findViewById<FrameLayout>(R.id.lensLayer).addView(lens, 0, FrameLayout.LayoutParams(0, 0))
         // The shelf is one focusable: OK resumes, holding OK opens the hide / open app menu.
         shelf.setOnClickListener { watchList.getOrNull(shelfAt)?.let { open(it) } }
         shelf.setOnLongClickListener { if (!holdFired) fireHold(shelf); true }
@@ -2858,40 +2864,55 @@ class MainActivity : Activity() {
     }
 
     /**
-     * tvOS focus: the tile grows and rises (with a real shadow), turns in from the side focus came from, and a
-     * diagonal sheen of light fades in across it. Unfocused tiles rest slightly dimmed.
+     * Focus on a dock tile, iOS glass style: the lens glides in behind it (see moveLens), the tile rises a little
+     * with a soft shadow, and a band of light sweeps across it in the direction focus moved. Rested tiles dim slightly.
      */
     private fun focusLift(v: View, radius: Float) {
-        val sheen = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(0x66FFFFFF, 0x0FFFFFFF, 0x00FFFFFF)).apply {
-            cornerRadius = radius
-            alpha = 0
-        }
-        val rim = GradientDrawable().apply {
-            cornerRadius = radius
-            setColor(0)
-            setStroke(1, 0x33FFFFFF)
-        }
-        v.foreground = LayerDrawable(arrayOf(sheen, rim))
+        val sheen = SheenDrawable(radius, resources.displayMetrics.density)
+        v.foreground = sheen
         Glass.round(v, radius)
         v.cameraDistance = 9000 * resources.displayMetrics.density
         v.alpha = REST_ALPHA
         v.isFocusable = true
         v.isClickable = true
         v.setOnLongClickListener { if (!holdFired) fireHold(v); true }
+        var anim: ValueAnimator? = null
         v.setOnFocusChangeListener { _, focused ->
-            if (focused && lastDir != 0 && !editing) v.rotationY = -lastDir * 10f
-            ValueAnimator.ofInt(sheen.alpha, if (focused) 255 else 0).apply {
-                duration = Motion.FOCUS_MS
-                addUpdateListener { sheen.alpha = it.animatedValue as Int }
+            if (focused && lastDir != 0 && !editing) v.rotationY = -lastDir * 6f
+            anim?.cancel()
+            val from = sheen.level
+            val dir = if (lastDir < 0) -1 else 1
+            anim = ValueAnimator.ofFloat(0f, 1f).apply {
+                duration = if (focused) 900 else 220
+                interpolator = Motion.EMPHASIZED
+                addUpdateListener {
+                    val f = it.animatedValue as Float
+                    sheen.level = if (focused) from + (1f - from) * minOf(1f, f * 3f) else from * (1f - f)
+                    if (focused) sheen.progress = if (dir > 0) f else 1f - f
+                }
                 start()
             }
             v.animate()
                 .scaleX(if (focused) FOCUS_SCALE else 1f).scaleY(if (focused) FOCUS_SCALE else 1f)
-                .translationZ(if (focused) dpf(18f) else 0f)
+                .translationZ(if (focused) dpf(10f) else 0f)
                 .rotationY(0f)
                 .alpha(if (focused) 1f else REST_ALPHA)
-                .setDuration(Motion.FOCUS_MS).setInterpolator(Motion.EMPHASIZED).start()
+                .setDuration(Motion.FOCUS_MS + 60).setInterpolator(Motion.EMPHASIZED).start()
         }
+    }
+
+    /** The glass lens follows focus along the dock and fades away when focus leaves it. */
+    private fun moveLens(v: View, focused: Boolean) {
+        if (!focused) {
+            ui.post { if (currentFocus?.parent !== appRow) lens.hide() }
+            return
+        }
+        if (editing) return lens.hide()
+        val place = {
+            val row = appRow.parent as View
+            lens.moveTo(row.left + appRow.left + v.left - dp(LENS_PAD).toFloat(), (row.top + appRow.top + v.top - dp(LENS_PAD)).toFloat())
+        }
+        if (v.width > 0) place() else v.post { if (v.isFocused) place() }
     }
 
     private fun dpf(v: Float) = v * resources.displayMetrics.density
@@ -3080,7 +3101,8 @@ class MainActivity : Activity() {
         const val DOCK_GAP = 18 // dp
         const val SHELF_EVERY = 9_000L // Top Shelf turns to the next item this often while it isn't focused
         const val FORK = true
-        const val FOCUS_SCALE = 1.14f
+        const val FOCUS_SCALE = 1.06f
+        const val LENS_PAD = 8 // dp the glass lens reaches past the focused tile
         const val REST_ALPHA = 0.88f
         const val GRID_GAP = 16 // dp; shared by the apps row and the cards so their columns line up
         /** Shown names for the wallpaper keys saved in prefs (the keys stay English). */

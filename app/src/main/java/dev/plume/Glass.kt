@@ -6,6 +6,11 @@ import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.LinearGradient
+import android.graphics.RectF
+import android.graphics.PixelFormat
+import android.graphics.ColorFilter
 import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
 import android.graphics.Matrix
@@ -121,6 +126,9 @@ class GlassView(context: Context) : View(context) {
         }
     }
 
+    /** As tall as the panel around it, never taller: with no content of its own it would claim the whole screen. */
+    override fun onMeasure(w: Int, h: Int) = setMeasuredDimension(resolveSize(0, w), resolveSize(0, h))
+
     fun show(bmp: Bitmap?, fadeMs: Long = Motion.FADE_MS) {
         if (bmp === to) return
         fade?.cancel()
@@ -214,4 +222,147 @@ internal object Glass {
             setLayerHeight(2, (h * 0.28f).toInt())
         }
     }
+}
+
+/**
+ * iOS "Liquid Glass" focus lens: one glass plate behind the focused dock tile. When focus moves it glides to the
+ * next tile on a spring, stretching along the way it travels and squashing a little, then settles with a soft
+ * wobble. A bright rim (lit from the top left) and a gloss on its upper half make it read as a piece of glass.
+ */
+class FocusLens(context: Context) : View(context) {
+    private val d = resources.displayMetrics.density
+    private val radius = 18f * d
+    private val box = RectF()
+    private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x2EFFFFFF }
+    private val gloss = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val rim = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1.5f * d }
+    private val glow = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 6f * d; color = 0x14FFFFFF }
+
+    // Spring state, in px and px/s along x (the dock only moves sideways).
+    private var x = 0f
+    private var v = 0f
+    private var target = 0f
+    private var last = 0L
+    private var running = false
+    private var shown = false
+
+    init {
+        importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
+        alpha = 0f
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
+        rim.shader = LinearGradient(0f, 0f, w.toFloat(), h.toFloat(),
+            intArrayOf(0xCCFFFFFF.toInt(), 0x33FFFFFF, 0x1AFFFFFF, 0x66FFFFFF), floatArrayOf(0f, 0.45f, 0.75f, 1f), Shader.TileMode.CLAMP)
+        gloss.shader = LinearGradient(0f, 0f, 0f, h * 0.55f, 0x33FFFFFF, 0x00FFFFFF, Shader.TileMode.CLAMP)
+    }
+
+    override fun onDraw(c: Canvas) {
+        val inset = rim.strokeWidth / 2
+        box.set(inset, inset, width - inset, height - inset)
+        c.drawRoundRect(box, radius, radius, glow)
+        c.drawRoundRect(box, radius, radius, fill)
+        c.drawRoundRect(box, radius, radius, gloss)
+        c.drawRoundRect(box, radius, radius, rim)
+    }
+
+    /** Glide to [tx] (in the parent's coordinates); [y] is set at once. Appears in place if it was hidden. */
+    fun moveTo(tx: Float, y: Float) {
+        translationY = y
+        target = tx
+        if (!shown) {
+            shown = true
+            x = tx
+            v = 0f
+            translationX = tx
+            scaleX = 0.92f
+            scaleY = 0.92f
+            animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(320).setInterpolator(Motion.EMPHASIZED).start()
+            return
+        }
+        if (!running) {
+            running = true
+            last = System.nanoTime()
+            postOnAnimation(::step)
+        }
+    }
+
+    fun hide() {
+        if (!shown) return
+        shown = false
+        running = false
+        animate().alpha(0f).scaleX(0.94f).scaleY(0.94f).setDuration(200).setInterpolator(Motion.STANDARD).start()
+    }
+
+    private fun step() {
+        if (!running) return
+        val now = System.nanoTime()
+        val dt = ((now - last) / 1e9f).coerceAtMost(1f / 30f)
+        last = now
+        // A slightly underdamped spring (iOS's "bouncy" focus feel), integrated in small steps to stay stable.
+        val k = STIFFNESS
+        val damp = 2f * kotlin.math.sqrt(k) * DAMPING_RATIO
+        repeat(4) {
+            val h = dt / 4f
+            v += (-k * (x - target) - damp * v) * h
+            x += v * h
+        }
+        translationX = x
+        val stretch = (kotlin.math.abs(v) / (width.coerceAtLeast(1) * 14f)).coerceAtMost(0.32f)
+        scaleX = 1f + stretch
+        scaleY = 1f - stretch * 0.22f
+        if (kotlin.math.abs(x - target) < 0.5f && kotlin.math.abs(v) < 8f) {
+            x = target
+            translationX = x
+            scaleX = 1f
+            scaleY = 1f
+            running = false
+        } else {
+            postOnAnimation(::step)
+        }
+    }
+
+    private companion object {
+        const val STIFFNESS = 420f
+        const val DAMPING_RATIO = 0.68f
+    }
+}
+
+/**
+ * Light passing over glass: a diagonal band of light that sweeps across a tile when it gets focus (in the direction
+ * focus moved), plus a soft gloss on the tile's top half and a hairline rim. [level] 0..1 fades it all in and out.
+ */
+class SheenDrawable(private val radius: Float, private val density: Float) : Drawable() {
+    var progress = 0f
+        set(v) { field = v; invalidateSelf() }
+    var level = 0f
+        set(v) { field = v; invalidateSelf() }
+
+    private val band = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val top = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val rim = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = maxOf(1f, density) }
+    private val box = RectF()
+
+    override fun draw(c: Canvas) {
+        val b = bounds
+        val w = b.width().toFloat()
+        val h = b.height().toFloat()
+        box.set(b)
+        val a = (level * 255).toInt()
+        if (a > 0) {
+            top.shader = LinearGradient(0f, b.top.toFloat(), 0f, b.top + h * 0.5f, Color.argb(a * 40 / 255, 255, 255, 255), 0, Shader.TileMode.CLAMP)
+            c.drawRoundRect(box, radius, radius, top)
+            val cx = b.left - w * 0.5f + progress * w * 2f
+            band.shader = LinearGradient(cx - w * 0.35f, b.top.toFloat(), cx + w * 0.35f, b.top + h,
+                intArrayOf(0, Color.argb(a * 90 / 255, 255, 255, 255), 0), floatArrayOf(0f, 0.5f, 1f), Shader.TileMode.CLAMP)
+            c.drawRoundRect(box, radius, radius, band)
+        }
+        rim.color = Color.argb(46 + (level * 70).toInt(), 255, 255, 255)
+        c.drawRoundRect(box, radius, radius, rim)
+    }
+
+    override fun setAlpha(alpha: Int) {}
+    override fun setColorFilter(cf: ColorFilter?) {}
+    @Deprecated("Deprecated in Java")
+    override fun getOpacity() = PixelFormat.TRANSLUCENT
 }
