@@ -2710,6 +2710,12 @@ class MainActivity : Activity() {
             ink.frostiness = 0.9f
             ink.edge = 0.8f * resources.displayMetrics.density
         }
+        for ((id, f) in listOf(R.id.shelfSource to 0.9f, R.id.shelfTitle to 0.75f, R.id.shelfSub to 0.9f)) {
+            findViewById<GlassText>(id).ink.apply {
+                frostiness = f
+                edge = (if (id == R.id.shelfTitle) 1.1f else 0.7f) * resources.displayMetrics.density
+            }
+        }
         weather = findViewById<GlassText>(R.id.weather).apply {
             ink.frostiness = 0.85f
             ink.edge = 0.8f * resources.displayMetrics.density
@@ -2868,6 +2874,7 @@ class MainActivity : Activity() {
         clock.ink.source = small
         date.ink.source = small
         weather.ink.source = small
+        for (id in intArrayOf(R.id.shelfSource, R.id.shelfTitle, R.id.shelfSub)) findViewById<GlassText>(id).ink.source = small
     }
 
     private fun loadHero(p: Prog) {
@@ -3337,7 +3344,7 @@ class MainActivity : Activity() {
             KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT,
         )
         val GREYSCALE = ColorMatrixColorFilter(ColorMatrix().apply { setSaturation(0f) })
-        val DECELERATE = android.view.animation.DecelerateInterpolator(1.5f)
+        val DECELERATE = Motion.S // every animation uses the one S-curve
         @Volatile var APPS: List<App>? = null
         /** Mono marks made by glyph(), by package; null = icon has no usable symbol. Main thread only. */
         val GLYPHS = HashMap<String, Bitmap?>()
