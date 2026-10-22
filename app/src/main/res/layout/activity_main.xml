@@ -33,10 +33,11 @@
         android:layout_height="match_parent"
         android:clipChildren="false"
         android:clipToPadding="false"
-        android:paddingStart="48dp"
-        android:paddingTop="28dp"
-        android:paddingEnd="48dp"
+        android:paddingStart="24dp"
+        android:paddingTop="24dp"
+        android:paddingEnd="24dp"
         android:paddingBottom="24dp">
+        <!-- 24 dp all round: about 2.5% of the width and 4% of the height, the same on every edge. -->
 
         <!-- Top bar: small glass buttons on the left, the clock large on the right. -->
         <LinearLayout
@@ -52,7 +53,7 @@
                 android:id="@+id/topGlass"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="4dp">
+                android:layout_marginTop="0dp">
 
             <LinearLayout
                 android:layout_width="wrap_content"
@@ -136,7 +137,8 @@
                     android:format12Hour="h:mm"
                     android:format24Hour="HH:mm"
                     android:includeFontPadding="false"
-                    android:layout_marginTop="2dp"
+                    android:layout_marginTop="-2dp"
+                    android:layout_marginBottom="-8dp"
                     android:letterSpacing="-0.03"
                     android:textSize="76sp" />
 
@@ -146,7 +148,7 @@
                     android:id="@+id/weather"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp"
+                    android:layout_marginTop="0dp"
                     android:layout_marginEnd="3dp"
                     android:fontFamily="sans-serif-medium"
                     android:includeFontPadding="false"
@@ -159,9 +161,9 @@
         <!-- Top Shelf: the Continue Watching item on the backdrop. Focusable as one; Left/Right page through. -->
         <LinearLayout
             android:id="@+id/shelf"
-            android:layout_width="460dp"
+            android:layout_width="560dp"
             android:layout_height="wrap_content"
-            android:layout_gravity="top|start"
+            android:layout_gravity="bottom|start"
             android:clipChildren="false"
             android:clipToPadding="false"
             android:focusable="true"
@@ -191,23 +193,24 @@
                 android:maxLines="2"
                 android:textSize="40sp" />
 
-            <dev.plume.GlassText
-                android:id="@+id/shelfSub"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:alpha="0.9"
-                android:fontFamily="sans-serif"
-                android:maxLines="1"
-                android:textSize="16sp" />
-
+            <!-- Bar first, then the time left under it. -->
             <ProgressBar
                 android:id="@+id/shelfProgress"
                 style="@android:style/Widget.ProgressBar.Horizontal"
                 android:layout_width="240dp"
                 android:layout_height="4dp"
-                android:layout_marginTop="12dp"
+                android:layout_marginTop="10dp"
                 android:max="100" />
+
+            <dev.plume.GlassText
+                android:id="@+id/shelfSub"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:alpha="0.9"
+                android:fontFamily="sans-serif"
+                android:maxLines="1"
+                android:textSize="16sp" />
 
             <LinearLayout
                 android:layout_width="wrap_content"
@@ -217,16 +220,23 @@
                 android:gravity="center_vertical"
                 android:orientation="horizontal">
 
-                <TextView
-                    android:id="@+id/shelfPlay"
+                <!-- Frosted glass capsule (blur added in code). -->
+                <dev.plume.GlassFrame
+                    android:id="@+id/playGlass"
                     android:layout_width="wrap_content"
-                    android:layout_height="36dp"
-                    android:fontFamily="sans-serif-medium"
-                    android:gravity="center"
-                    android:paddingStart="20dp"
-                    android:paddingEnd="22dp"
-                    android:text="@string/resume"
-                    android:textSize="15sp" />
+                    android:layout_height="wrap_content">
+
+                    <TextView
+                        android:id="@+id/shelfPlay"
+                        android:layout_width="wrap_content"
+                        android:layout_height="36dp"
+                        android:fontFamily="sans-serif-medium"
+                        android:gravity="center"
+                        android:paddingStart="20dp"
+                        android:paddingEnd="22dp"
+                        android:text="@string/resume"
+                        android:textSize="15sp" />
+                </dev.plume.GlassFrame>
 
                 <!-- One dot per item, the current one long (iOS page control). -->
                 <LinearLayout

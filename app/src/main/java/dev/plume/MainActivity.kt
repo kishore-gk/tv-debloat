@@ -245,6 +245,7 @@ class MainActivity : Activity() {
     private lateinit var clock: GlassClock
     private lateinit var date: GlassClock
     private lateinit var weather: GlassText
+    private lateinit var playButtonGlass: GlassView
     private lateinit var sheetGlass: GlassView
     private var dockOpen = -1f // 0 compact, 1 open (lens and name room); -1 not laid out yet
     private var dockAnim: ValueAnimator? = null
@@ -1948,7 +1949,7 @@ class MainActivity : Activity() {
         val at = IntArray(2).also { anchor.getLocationInWindow(it) }
         menu.elevation = if (dark) 0f else dp(8).toFloat()
         // Over the anchor's left edge, but kept inside the row's 48 dp side margin near the right of the screen.
-        val x = minOf(at[0], resources.displayMetrics.widthPixels - dp(48) - menu.width)
+        val x = minOf(at[0], resources.displayMetrics.widthPixels - dp(SCREEN_PAD) - menu.width)
         menu.showAtLocation(anchor, Gravity.NO_GRAVITY, x, maxOf(dp(8), at[1] - list.measuredHeight - dp(8)))
         list.getChildAt(0).requestFocus()
     }
@@ -2063,7 +2064,7 @@ class MainActivity : Activity() {
     private fun openAllApps() {
         allAppsGrid.removeAllViews()
         val gap = dp(10)
-        val width = (resources.displayMetrics.widthPixels - dp(96) - gap * 5) / 6
+        val width = (resources.displayMetrics.widthPixels - dp(SCREEN_PAD) * 2 - gap * 5) / 6
         for (a in sortedApps()) {
             val t = appTile(a) // holding OK here pins it to the row (see onHold)
             allAppsGrid.addView(t, GridLayout.LayoutParams().apply {
@@ -2672,9 +2673,8 @@ class MainActivity : Activity() {
         }
         if (shelf.visibility != View.VISIBLE) {
             shelf.visibility = View.VISIBLE
-            shelf.alpha = 0f
-            shelf.translationY = dpf(16f)
-            shelf.animate().alpha(1f).translationY(0f).setDuration(500).setInterpolator(Motion.EMPHASIZED).start()
+            shelf.alpha = 0f // fade only: its height above the dock is dockSize's (translationY)
+            shelf.animate().alpha(1f).setDuration(500).setInterpolator(Motion.S).start()
         }
         bindShelf(0)
         scheduleShelfTick()
@@ -2720,9 +2720,15 @@ class MainActivity : Activity() {
             ink.frostiness = 0.85f
             ink.edge = 0.8f * resources.displayMetrics.density
         }
-        // The shelf's top stays pinned a little above the middle of the screen; dockSize scales it from there.
-        (shelf.layoutParams as FrameLayout.LayoutParams).topMargin =
-            (resources.displayMetrics.heightPixels * SHELF_TOP).toInt() - dp(28) // minus the content's top padding
+        // The shelf stands on the resting dock: its Resume row stays put while the title above grows or shrinks.
+        (shelf.layoutParams as FrameLayout.LayoutParams).bottomMargin = dockRestHeight() + dp(SHELF_GAP)
+        val playGlass = findViewById<FrameLayout>(R.id.playGlass)
+        playButtonGlass = GlassView(this)
+        playGlass.addView(playButtonGlass, 0, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        playGlass.outlineProvider = object : android.view.ViewOutlineProvider() {
+            override fun getOutline(view: View, o: android.graphics.Outline) = o.setRoundRect(0, 0, view.width, view.height, view.height / 2f)
+        }
+        playGlass.clipToOutline = true
         setupSheet()
         dockSize(0f)
         lens = FocusLens(this, tileRadius() + dp(LENS_PAD))
@@ -2742,21 +2748,27 @@ class MainActivity : Activity() {
     private fun softShadows() {
         val big = dpf(14f)
         val small = dpf(8f)
-        findViewById<View>(R.id.shelfPlay).elevation = dpf(6f)
         findViewById<View>(R.id.shelfProgress).elevation = dpf(2f)
     }
 
     /** Resume button: glass while the shelf rests, solid white with dark text once it's focused (tvOS buttons). */
     private fun styleShelf(focused: Boolean) {
         val play = findViewById<TextView>(R.id.shelfPlay)
+        val glassBox = findViewById<View>(R.id.playGlass)
         val ink = if (focused) 0xFF0A0A0A.toInt() else DARK_TEXT
-        play.background = Glass.chip(dpf(18f), focused)
+        // Frosted glass with a light rim at rest; focused, bright white glass over the frost, dark text (tvOS).
+        play.background = GradientDrawable().apply {
+            cornerRadius = dpf(18f)
+            setColor(if (focused) 0xE6FFFFFF.toInt() else 0x14FFFFFF)
+            setStroke(1, if (focused) 0x00FFFFFF else 0x66FFFFFF)
+        }
         play.setTextColor(ink)
         play.setCompoundDrawablesRelativeWithIntrinsicBounds(playGlyph(ink), null, null, null)
         play.compoundDrawablePadding = dp(8)
-        play.pivotX = 0f
-        play.animate().scaleX(if (focused) 1.1f else 1f).scaleY(if (focused) 1.1f else 1f)
-            .setDuration(Motion.FOCUS_MS).setInterpolator(Motion.EMPHASIZED).start()
+        glassBox.pivotX = 0f
+        glassBox.pivotY = glassBox.height / 2f
+        glassBox.animate().scaleX(if (focused) 1.1f else 1f).scaleY(if (focused) 1.1f else 1f)
+            .setDuration(Motion.FOCUS_MS).setInterpolator(Motion.S).start()
     }
 
     private fun playGlyph(color: Int) = ShapeDrawable(PathShape(Path().apply {
@@ -2781,7 +2793,7 @@ class MainActivity : Activity() {
         val bar = findViewById<ProgressBar>(R.id.shelfProgress)
         val parts = listOf(src, title, sub, bar)
         val rest = mapOf<View, Float>(src to 0.75f, title to 1f, sub to 0.9f, bar to 1f)
-        val fill = {
+        val fill = { glideShelfHeight {
             src.text = apps.firstOrNull { it.pkg == p.pkg }?.label.orEmpty()
             title.text = p.title
             sub.text = p.sub
@@ -2791,7 +2803,7 @@ class MainActivity : Activity() {
             shelf.contentDescription = p.title
             shelf.setTag(R.id.shelf, p) // holding OK hides it (see onHold)
             showDots()
-        }
+        } }
         val swap = ++shelfSwap
         if (dir == 0) {
             parts.forEach { it.animate().cancel(); it.alpha = rest[it]!!; it.translationX = 0f }
@@ -2870,6 +2882,7 @@ class MainActivity : Activity() {
         backdrop.show(big)
         glass.show(small)
         topGlass.show(small)
+        playButtonGlass.show(small)
         sheetGlass.show(small)
         clock.ink.source = small
         date.ink.source = small
@@ -3089,15 +3102,47 @@ class MainActivity : Activity() {
     private fun shelfSize(f: Float) {
         fun gap(open: Int, rest: Int) = dp(rest) + ((dp(open) - dp(rest)) * f).toInt()
         val s = 1f - (1f - SHELF_OPEN_SCALE) * f
+        // Scaled from its bottom-left corner, and lifted by exactly what the dock grows, so the Resume row keeps the
+        // same distance above the dock.
         shelf.pivotX = 0f
-        shelf.pivotY = 0f
+        shelf.pivotY = shelf.height.toFloat()
         shelf.scaleX = s
         shelf.scaleY = s
+        shelf.translationY = -(dockOpenHeight() - dockRestHeight()) * f
         for ((id, open, rest) in listOf(
-            Triple(R.id.shelfTitle, 4, 10), Triple(R.id.shelfSub, 6, 12), Triple(R.id.shelfProgress, 10, 16),
+            Triple(R.id.shelfTitle, 2, 4), Triple(R.id.shelfProgress, 6, 10), Triple(R.id.shelfSub, 4, 6),
         )) (findViewById<View>(id).layoutParams as ViewGroup.MarginLayoutParams).topMargin = gap(open, rest)
-        ((findViewById<View>(R.id.shelfPlay).parent as View).layoutParams as ViewGroup.MarginLayoutParams).topMargin = gap(14, 26)
+        ((findViewById<View>(R.id.playGlass).parent as View).layoutParams as ViewGroup.MarginLayoutParams).topMargin = gap(10, 14)
         shelf.requestLayout()
+    }
+
+    /** What the dock takes up from the bottom of the content area, resting (small, scaled) and open. */
+    private fun dockRestHeight() = ((dp(DOCK_REST_PAD) * 2 + tileWidth() * 9 / 16) * DOCK_REST_SCALE).toInt()
+    private fun dockOpenHeight() = dp(DOCK_OPEN_PAD) * 2 + tileWidth() * 9 / 16
+
+    /**
+     * When a new show's title takes a different number of lines, the shelf (standing on its Resume row) changes
+     * height and the title and app name jump. Instead they glide there: measure the change after layout and slide
+     * them from where they were.
+     */
+    private fun glideShelfHeight(change: () -> Unit) {
+        val before = shelf.height
+        change()
+        if (before == 0) return
+        shelf.viewTreeObserver.addOnPreDrawListener(object : android.view.ViewTreeObserver.OnPreDrawListener {
+            override fun onPreDraw(): Boolean {
+                shelf.viewTreeObserver.removeOnPreDrawListener(this)
+                val delta = (shelf.height - before).toFloat()
+                if (delta != 0f) for (id in intArrayOf(R.id.shelfSource, R.id.shelfTitle)) {
+                    findViewById<View>(id).apply {
+                        translationY = delta
+                        animate().translationY(0f).setDuration(420).setInterpolator(Motion.S).start()
+                    }
+                }
+                shelf.pivotY = shelf.height.toFloat()
+                return true
+            }
+        })
     }
 
     /** Settings as a floating frosted sheet on the right, like an iOS sidebar, with the dock's glass and rim. */
@@ -3126,7 +3171,7 @@ class MainActivity : Activity() {
     }
 
     /** DOCK_FIT 16:9 tiles exactly fill the glass panel (content width, plus the dock's 16 dp overhang each side, minus its 24 dp padding). */
-    private fun tileWidth() = (resources.displayMetrics.widthPixels - dp(96) + dp(32) - dp(48) - dp(DOCK_GAP) * (DOCK_FIT - 1)) / DOCK_FIT
+    private fun tileWidth() = (resources.displayMetrics.widthPixels - dp(SCREEN_PAD) * 2 + dp(32) - dp(48) - dp(DOCK_GAP) * (DOCK_FIT - 1)) / DOCK_FIT
 
     /** Apple TV icon roundness: about a quarter of the tile's height, on continuous corners. */
     private fun tileRadius() = tileWidth() * 9 / 16 * 0.24f
@@ -3315,7 +3360,8 @@ class MainActivity : Activity() {
         const val DOCK_GAP = 28 // dp; room for the lens between tiles
         const val SHELF_EVERY = 9_000L // Top Shelf turns to the next item this often while it isn't focused
         const val FORK = true
-        const val SHELF_TOP = 0.40f // the shelf's top edge, as a share of the screen height
+        const val SCREEN_PAD = 24 // dp margin on every edge of the screen
+        const val SHELF_GAP = 24 // dp between the shelf's Resume row and the dock
         const val SHELF_OPEN_SCALE = 0.74f // shelf size while the dock is open
         const val DOCK_OPEN_PAD = 22 // dp around the tiles with the dock open: room for the lens (LENS_PAD) and its glow
         const val DOCK_REST_PAD = 12 // dp of glass above and below the tiles while the dock rests
