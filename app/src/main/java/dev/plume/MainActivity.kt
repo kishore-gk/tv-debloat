@@ -3080,8 +3080,7 @@ class MainActivity : Activity() {
 
     /**
      * [f] 0 = resting, 1 = open. Resting, the dock is scaled down from its bottom centre like the macOS Dock;
-     * opening grows it back. Only scale and position change, never layout, so the GPU animates it smoothly; the
-     * glass behind it realigns once it settles.
+     * opening grows it back. Only scale and position change, never layout, so the GPU animates it smoothly.
      */
     private fun dockSize(f: Float) {
         if (dockAnim?.isRunning != true) dockOpen = f
@@ -3091,7 +3090,10 @@ class MainActivity : Activity() {
         dock.scaleX = scale
         dock.scaleY = scale
         shelfSize(f)
-        if (f == 0f || f == 1f) glass.invalidate()
+        // The glass follows the motion frame by frame (its picture stays lined up with the screen while it scales),
+        // rather than snapping into place when the motion ends.
+        glass.invalidate()
+        playButtonGlass.invalidate()
     }
 
     /** The dock's one fixed layout: logos only, the same glass above and below, room for the lens. */
