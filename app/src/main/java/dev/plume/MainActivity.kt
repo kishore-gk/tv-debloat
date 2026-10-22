@@ -196,6 +196,9 @@ internal fun hiResArt(u: String, w: Int): List<String> {
 /** Allowed to start an activity from the background because the Home button service is bound. */
 class Updated : BroadcastReceiver() {
     override fun onReceive(c: Context, i: Intent) {
+        // Installing over Plume unbinds its Home service, which marks it "turned off by the user". It wasn't:
+        // clear that, so the new version turns the service back on when it opens.
+        c.getSharedPreferences("home", Context.MODE_PRIVATE).edit().remove("home_off").commit()
         c.startActivity(Intent(c, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }
 }
@@ -1560,7 +1563,12 @@ class MainActivity : Activity() {
                 moveLens(v, focused)
             }
         }
-        lens.layoutParams = FrameLayout.LayoutParams(width + dp(LENS_PAD) * 2, width * 9 / 16 + dp(LENS_PAD) * 2)
+        // Negative end margins: the lens is drawn bigger than a tile but takes no more room than one, so it never
+        // adds height to the dock (it's positioned by translation, see moveLens).
+        lens.layoutParams = FrameLayout.LayoutParams(width + dp(LENS_PAD) * 2, width * 9 / 16 + dp(LENS_PAD) * 2).apply {
+            rightMargin = -dp(LENS_PAD) * 2
+            bottomMargin = -dp(LENS_PAD) * 2
+        }
         showNames()
         alignRow()
         if (takeFocus) (tiles.firstOrNull { it.tag == focusedTag } ?: tiles[0]).requestFocus()
@@ -3039,6 +3047,10 @@ class MainActivity : Activity() {
         dockOpen = to
     }
 
+    /**
+     * [f] 0 = resting, 1 = open. Resting, the dock loses the name line and most of its padding and is scaled down
+     * from its bottom centre to about 40% of its open height, like the macOS Dock; opening grows it all back.
+     */
     private fun dockSize(f: Float) {
         if (dockAnim?.isRunning != true) dockOpen = f
         fun lerp(a: Int, b: Int) = dp(a) + ((dp(b) - dp(a)) * f).toInt()
@@ -3051,6 +3063,13 @@ class MainActivity : Activity() {
             }
             v.requestLayout()
         }
+        val scale = DOCK_REST_SCALE + (1f - DOCK_REST_SCALE) * f
+        dock.scaleX = scale
+        dock.scaleY = scale
+        dock.pivotX = dock.width / 2f
+        dock.pivotY = dock.height.toFloat()
+        dock.post { dock.pivotX = dock.width / 2f; dock.pivotY = dock.height.toFloat() } // after the new height lays out
+        glass.invalidate() // its picture is lined up with the screen, which moves as the dock scales
     }
 
     /** Settings as a floating frosted sheet on the right, like an iOS sidebar, with the dock's glass and rim. */
@@ -3268,7 +3287,8 @@ class MainActivity : Activity() {
         const val DOCK_GAP = 28 // dp; room for the lens between tiles
         const val SHELF_EVERY = 9_000L // Top Shelf turns to the next item this often while it isn't focused
         const val FORK = true
-        const val DOCK_REST_PAD = 14 // dp of glass above and below the tiles while the dock rests
+        const val DOCK_REST_PAD = 12 // dp of glass above and below the tiles while the dock rests
+        const val DOCK_REST_SCALE = 0.62f // resting dock size; with the smaller padding, ~40% of the open height
         val SHELF_KEYS = setOf(KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT)
         const val HERO_MIN_WIDTH = 1280
         const val HERO_TRIES = 4

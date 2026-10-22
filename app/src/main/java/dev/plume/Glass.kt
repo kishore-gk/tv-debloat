@@ -157,9 +157,14 @@ class GlassView(context: Context) : View(context) {
     /** Same centre crop as the full-screen backdrop, shifted by where this view sits on screen. */
     private fun paintLayer(c: Canvas, b: Bitmap?, alpha: Float, w: Int, h: Int) {
         if (b == null || alpha <= 0f || w == 0 || h == 0) return
-        val s = maxOf(w.toFloat() / b.width, h.toFloat() / b.height)
+        // A scaled parent (the resting dock) shrinks what we draw; draw the picture that much bigger so it still
+        // lines up with the screen.
+        var z = 1f
+        var p: View? = this
+        while (p != null) { z *= p.scaleX; p = p.parent as? View }
+        val s = maxOf(w.toFloat() / b.width, h.toFloat() / b.height) / z
         m.setScale(s, s)
-        m.postTranslate((w - b.width * s) / 2f - (at[0] - rootAt[0]), (h - b.height * s) / 2f - (at[1] - rootAt[1]))
+        m.postTranslate(((w - b.width * s * z) / 2f - (at[0] - rootAt[0])) / z, ((h - b.height * s * z) / 2f - (at[1] - rootAt[1])) / z)
         paint.alpha = (alpha * 255).toInt()
         c.drawBitmap(b, m, paint)
     }
@@ -423,6 +428,7 @@ class GlassClock(context: Context, attrs: AttributeSet?) : android.widget.TextCl
     private val at = IntArray(2)
     private val rootAt = IntArray(2)
     var edge = 1.4f * resources.displayMetrics.density
+    private val cut = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.DST_OUT)
 
     override fun onDraw(c: Canvas) {
         val p = paint
@@ -446,12 +452,18 @@ class GlassClock(context: Context, attrs: AttributeSet?) : android.widget.TextCl
             Color.argb((bottom * 255).toInt(), 255, 255, 255), Shader.TileMode.CLAMP)
         c.drawPaint(frost)
         c.restoreToCount(layer)
-        // 2. The lit edge: a thin stroke, bright at the top of each glyph and fading towards the bottom.
-        p.style = Paint.Style.STROKE
-        p.strokeWidth = edge
-        p.shader = LinearGradient(0f, 0f, 0f, height.toFloat(), 0xF2FFFFFF.toInt(), 0x40FFFFFF, Shader.TileMode.CLAMP)
+        // 2. The lit edge: light catching the top of each glyph. Drawn as the glyph minus itself nudged down, not as
+        //    a stroke: font outlines overlap inside some digits (4, 9), and a stroke would trace those as lines.
+        val lit = c.saveLayer(0f, 0f, width.toFloat(), height.toFloat(), null)
+        p.shader = LinearGradient(0f, 0f, 0f, height.toFloat(), 0xF2FFFFFF.toInt(), 0x59FFFFFF, Shader.TileMode.CLAMP)
         super.onDraw(c)
         p.shader = null
+        p.xfermode = cut
+        c.translate(0f, edge)
+        super.onDraw(c)
+        c.translate(0f, -edge)
+        p.xfermode = null
+        c.restoreToCount(lit)
         p.style = Paint.Style.FILL
     }
 }
