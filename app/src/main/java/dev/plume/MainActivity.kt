@@ -291,6 +291,8 @@ class MainActivity : Activity() {
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
         readDebug(intent)
+        // The backdrop covers the whole window: no window background painted under it on every frame.
+        window.setBackgroundDrawable(null)
         setContentView(R.layout.activity_main)
         appRow = findViewById(R.id.appRow)
         allApps = findViewById(R.id.allApps)
@@ -738,7 +740,7 @@ class MainActivity : Activity() {
         cardLit = if (dark) DARK_CARD_LIT else intArrayOf(Color.WHITE, Color.WHITE)
         // Must match the colour each wallpaper fades into, or the bottom edge shows a seam.
         ground = if (dark) DARK_BG else 0xFFF3F5F7.toInt()
-        findViewById<View>(R.id.root).setBackgroundColor(ground)
+        findViewById<View>(R.id.root).background = null // the backdrop paints black itself when it has no picture
         allApps.setBackgroundColor(ground)
         for (id in intArrayOf(R.id.clock, R.id.date, R.id.appsTitle, R.id.shelfSource, R.id.shelfTitle, R.id.shelfSub, R.id.allAppsTitle, R.id.rowLabel, R.id.weather)) {
             findViewById<TextView>(id).setTextColor(fg)
@@ -1777,6 +1779,7 @@ class MainActivity : Activity() {
      */
     override fun dispatchKeyEvent(e: KeyEvent): Boolean {
         if (e.action == KeyEvent.ACTION_DOWN) {
+            backdrop.hold() // the slow zoom waits while the remote is in use
             lastKeyAt = SystemClock.uptimeMillis()
             lastDir = when (e.keyCode) {
                 KeyEvent.KEYCODE_DPAD_LEFT -> -1

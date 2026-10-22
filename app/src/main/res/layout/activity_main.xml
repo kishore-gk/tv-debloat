@@ -4,7 +4,7 @@
     android:id="@+id/root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#000000">
+    android:background="@null">
 
     <!-- Unused in the glass layout (the backdrop shows the wallpaper); kept for the wallpaper code's id. -->
     <ImageView

@@ -24,6 +24,7 @@ import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.LayerDrawable
 import android.os.Build
+import android.os.SystemClock
 import android.util.AttributeSet
 import android.view.Gravity
 import android.view.View
@@ -70,13 +71,38 @@ class Backdrop(context: Context, attrs: AttributeSet?) : FrameLayout(context, at
     private val drift = arrayOfNulls<ObjectAnimator>(2)
     private var front = 0
 
+    private companion object {
+        const val HOLD_MS = 3_000L
+    }
+
     /** The picture shown (or on its way in); null is the plain background colour. */
     var current: Bitmap? = null
         private set
 
+    init {
+        setBackgroundColor(0xFF000000.toInt()) // only until a picture covers the screen (see show)
+    }
+
+    /**
+     * Pause the slow zoom while the remote is in use, and resume it once it has been quiet for a moment. The
+     * zoom redraws the whole screen every frame, the biggest single cost while moving around.
+     */
+    fun hold() {
+        drift.forEach { if (it?.isRunning == true) it.pause() }
+        removeCallbacks(resume)
+        postDelayed(resume, HOLD_MS)
+        heldUntil = SystemClock.uptimeMillis() + HOLD_MS
+    }
+
+    private var heldUntil = 0L
+    private val resume = Runnable { drift.forEach { if (it?.isPaused == true) it.resume() } }
+
     fun show(bmp: Bitmap?, fadeMs: Long = Motion.FADE_MS) {
         if (bmp === current) return
         current = bmp
+        // A picture covers the whole screen, so nothing needs painting under it: the black ground is dropped once
+        // the picture has faded in (one full-screen fill less on every frame), and comes back when there's none.
+        if (bmp == null) setBackgroundColor(0xFF000000.toInt())
         val i = 1 - front
         val next = layers[i]
         val prev = layers[front]
@@ -89,7 +115,12 @@ class Backdrop(context: Context, attrs: AttributeSet?) : FrameLayout(context, at
         next.alpha = 0f
         next.bringToFront()
         next.animate().alpha(1f).setDuration(fadeMs).setInterpolator(Motion.STANDARD)
-            .withEndAction { if (current === bmp) prev.setImageDrawable(null) } // keep only one picture in memory
+            .withEndAction {
+                if (current === bmp) {
+                    prev.setImageDrawable(null) // keep only one picture in memory
+                    if (bmp != null) background = null
+                }
+            }
             .start()
         if (bmp != null && !Debug.off("nokb")) {
             drift[i] = ObjectAnimator.ofPropertyValuesHolder(next,
@@ -99,6 +130,7 @@ class Backdrop(context: Context, attrs: AttributeSet?) : FrameLayout(context, at
                 duration = Motion.KEN_BURNS_MS
                 interpolator = Motion.S
                 start()
+                if (SystemClock.uptimeMillis() < heldUntil) pause()
             }
         }
     }
