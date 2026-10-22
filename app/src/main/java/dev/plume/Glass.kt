@@ -229,11 +229,14 @@ internal object Glass {
     /** The glass edge, drawn over a panel: a hairline rim, brightest along the top where light catches it. */
     fun rim(radius: Float, density: Float): Drawable = RimDrawable(radius, density, 0x47FFFFFF, 0x14FFFFFF)
 
-    /** A small glass pill (buttons on the picture): translucent white with a hairline rim, solid white when lit. */
+    /**
+     * A small glass pill (buttons on the picture): dark smoked glass with a light rim at rest, so it shows on bright
+     * and dark pictures alike; solid white when lit.
+     */
     fun chip(radius: Float, lit: Boolean): Drawable = GradientDrawable().apply {
         cornerRadius = radius
-        setColor(if (lit) 0xFFF5F5F7.toInt() else 0x38FFFFFF)
-        if (!lit) setStroke(1, 0x33FFFFFF)
+        setColor(if (lit) 0xFFF5F5F7.toInt() else 0x59000000)
+        if (!lit) setStroke(1, 0x66FFFFFF)
     }
 }
 
@@ -493,5 +496,33 @@ class GlassFrame(context: Context, attrs: AttributeSet?) : FrameLayout(context, 
         val ew = MeasureSpec.makeMeasureSpec(measuredWidth, MeasureSpec.EXACTLY)
         val eh = MeasureSpec.makeMeasureSpec(measuredHeight, MeasureSpec.EXACTLY)
         for (i in 0 until childCount) (getChildAt(i) as? GlassView)?.measure(ew, eh)
+    }
+}
+
+/**
+ * Text over artwork, readable on any picture (white posters included): two shadows, a wide soft halo and a tight
+ * one under the letters, iOS style. Drawn straight onto the screen (no offscreen layer), so fading the text never
+ * crops its shadow to a box.
+ */
+class ShadowText(context: Context, attrs: AttributeSet?) : android.widget.TextView(context, attrs) {
+    private val d = resources.displayMetrics.density
+
+    init {
+        // The widest shadow, set on the view so TextView makes room for it when it clips its drawing.
+        setShadowLayer(WIDE * d, 0f, 2f * d, 0)
+    }
+
+    override fun hasOverlappingRendering() = false
+
+    override fun onDraw(c: Canvas) {
+        val p = paint
+        p.setShadowLayer(WIDE * d, 0f, 2f * d, 0x99000000.toInt())
+        super.onDraw(c)
+        p.setShadowLayer(3f * d, 0f, 1f * d, 0xA6000000.toInt())
+        super.onDraw(c)
+    }
+
+    private companion object {
+        const val WIDE = 22f
     }
 }

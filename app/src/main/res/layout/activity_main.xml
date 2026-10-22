@@ -164,7 +164,7 @@
             android:orientation="vertical"
             android:visibility="gone">
 
-            <TextView
+            <dev.plume.ShadowText
                 android:id="@+id/shelfSource"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
@@ -175,7 +175,7 @@
                 android:textAllCaps="true"
                 android:textSize="12sp" />
 
-            <TextView
+            <dev.plume.ShadowText
                 android:id="@+id/shelfTitle"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -185,11 +185,9 @@
                 android:letterSpacing="-0.02"
                 android:lineSpacingMultiplier="0.92"
                 android:maxLines="2"
-                android:shadowColor="#80000000"
-                android:shadowRadius="16"
                 android:textSize="40sp" />
 
-            <TextView
+            <dev.plume.ShadowText
                 android:id="@+id/shelfSub"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"

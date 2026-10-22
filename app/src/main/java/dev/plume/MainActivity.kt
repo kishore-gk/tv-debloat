@@ -1611,9 +1611,9 @@ class MainActivity : Activity() {
     /** "App names: Always": a name under every tile, same width and gap as the tiles, so they line up. */
     private fun showNames() {
         val row = findViewById<LinearLayout>(R.id.nameRow)
-        val always = rowNames() == "always"
+        val always = false // the glass dock shows logos only
         row.visibility = if (always) View.VISIBLE else View.GONE
-        findViewById<View>(R.id.rowLabel).visibility = if (always) View.GONE else View.VISIBLE
+        findViewById<View>(R.id.rowLabel).visibility = View.GONE
         row.removeAllViews()
         if (!always) return
         for (i in 0 until appRow.childCount) {
@@ -2736,11 +2736,6 @@ class MainActivity : Activity() {
     private fun softShadows() {
         val big = dpf(14f)
         val small = dpf(8f)
-        for ((id, r) in listOf(R.id.shelfTitle to big,
-            R.id.shelfSource to small, R.id.shelfSub to small)) {
-            findViewById<TextView>(id).setShadowLayer(r, 0f, dpf(1.5f), if (r == big) 0x73000000 else 0x8C000000.toInt())
-        }
-        findViewById<TextView>(R.id.rowLabel).setShadowLayer(small, 0f, dpf(1f), 0x66000000)
         findViewById<View>(R.id.shelfPlay).elevation = dpf(6f)
         findViewById<View>(R.id.shelfProgress).elevation = dpf(2f)
     }
@@ -2827,7 +2822,8 @@ class MainActivity : Activity() {
             row.addView(View(this).apply {
                 background = GradientDrawable().apply {
                     cornerRadius = dpf(3f)
-                    setColor(if (on) 0xFFFFFFFF.toInt() else 0x59FFFFFF)
+                    setColor(if (on) 0xFFFFFFFF.toInt() else 0x8CFFFFFF.toInt())
+                    setStroke(1, 0x40000000) // a fine dark edge, so the dots show on white pictures too
                 }
                 elevation = dpf(2f)
             }, LinearLayout.LayoutParams(dp(if (on) 18 else 6), dp(6)).apply { if (i > 0) marginStart = dp(6) })
@@ -3063,14 +3059,10 @@ class MainActivity : Activity() {
     private fun dockSize(f: Float) {
         if (dockAnim?.isRunning != true) dockOpen = f
         fun lerp(a: Int, b: Int) = dp(a) + ((dp(b) - dp(a)) * f).toInt()
-        findViewById<View>(R.id.appScroll).setPadding(dp(24), lerp(DOCK_REST_PAD, 28), dp(24), lerp(DOCK_REST_PAD, 8))
+        // Logos only, so open just means room for the lens: the same glass above and below the tiles either way.
+        findViewById<View>(R.id.appScroll).setPadding(dp(24), lerp(DOCK_REST_PAD, DOCK_OPEN_PAD), dp(24), lerp(DOCK_REST_PAD, DOCK_OPEN_PAD))
         for (id in intArrayOf(R.id.rowLabel, R.id.nameRow)) {
-            val v = findViewById<View>(id)
-            (v.layoutParams as LinearLayout.LayoutParams).apply {
-                height = lerp(0, 22)
-                topMargin = lerp(0, 18)
-            }
-            v.requestLayout()
+            (findViewById<View>(id).layoutParams as LinearLayout.LayoutParams).apply { height = 0; topMargin = 0 }
         }
         shelfSize(f)
         val scale = DOCK_REST_SCALE + (1f - DOCK_REST_SCALE) * f
@@ -3318,6 +3310,7 @@ class MainActivity : Activity() {
         const val FORK = true
         const val SHELF_TOP = 0.40f // the shelf's top edge, as a share of the screen height
         const val SHELF_OPEN_SCALE = 0.74f // shelf size while the dock is open
+        const val DOCK_OPEN_PAD = 22 // dp around the tiles with the dock open: room for the lens (LENS_PAD) and its glow
         const val DOCK_REST_PAD = 12 // dp of glass above and below the tiles while the dock rests
         const val DOCK_REST_SCALE = 0.62f // resting dock size; with the smaller padding, ~40% of the open height
         val SHELF_KEYS = setOf(KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT)
