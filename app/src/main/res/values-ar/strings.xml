@@ -90,6 +90,7 @@
     <string name="pin_hint">▲ ▼ تغيير  ·  ◀ ▶ تنقّل  ·  OK إدخال. أزرار الأرقام تعمل أيضًا.</string>
     <string name="pin_forgot">نسيته؟ إعدادات Android ← التطبيقات ← Plume ← محو البيانات يزيل القفل مع تخطيطك وإعداداتك.</string>
     <string name="tip_move">تلميح: اضغط مطوّلًا على OK فوق تطبيق لإعادة ترتيب الصف</string>
+    <string name="resume">استئناف</string>
     <string name="open">فتح</string>
     <string name="move">نقل</string>
     <string name="remove_from_row">إزالة من الصف</string>

@@ -22,6 +22,7 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.LinearGradient
+import android.graphics.Path
 import android.graphics.Paint
 import android.graphics.Shader
 import android.graphics.Typeface
@@ -34,6 +35,8 @@ import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.LayerDrawable
+import android.graphics.drawable.ShapeDrawable
+import android.graphics.drawable.shapes.PathShape
 import android.graphics.drawable.TransitionDrawable
 import android.media.tv.TvContract
 import android.media.tv.TvInputInfo
@@ -176,8 +179,9 @@ class Updated : BroadcastReceiver() {
 class MainActivity : Activity() {
 
     /** [offline]: an HDMI port with no signal right now (see inRow). */
-    private class App(val pkg: String, val label: String, val launch: Intent, val icon: Drawable, val offline: Boolean = false)
-    private class Prog(val title: String, val sub: String, val progress: Int, val image: String?, val intent: String?, val pkg: String?)
+    private class App(val pkg: String, val label: String, val launch: Intent, val icon: Drawable, val offline: Boolean = false, val banner: Drawable? = null)
+    /** [art]: the widest, largest picture the app gave, for the full-screen Top Shelf. */
+    private class Prog(val title: String, val sub: String, val progress: Int, val image: String?, val intent: String?, val pkg: String?, val art: String? = image)
 
     private val prefs by lazy { getSharedPreferences("home", MODE_PRIVATE) }
     private val io = Executors.newSingleThreadExecutor()
@@ -195,7 +199,6 @@ class MainActivity : Activity() {
     private var watchKey: String? = null
     private var lastTop: View? = null // last focused view in each home row, so Up/Down return to it
     private var lastApp: View? = null
-    private var lastCard: View? = null
     private var editing = false
     private var grabbed: View? = null
     private var holdFired = false
@@ -206,10 +209,24 @@ class MainActivity : Activity() {
     private var cardLit = cardRest
 
     private lateinit var appRow: LinearLayout
-    private lateinit var watchRow: LinearLayout
-    private lateinit var watchTitle: TextView
+    private lateinit var backdrop: Backdrop
+    private lateinit var glass: GlassView
+    private lateinit var shelf: LinearLayout
+    private lateinit var dock: FrameLayout
     private val appsTitle by lazy { findViewById<TextView>(R.id.appsTitle) }
-    private lateinit var watchScroll: View
+    // Glass layout state: the wallpaper (shown when there's nothing to continue), the Top Shelf position, and the
+    // last Left/Right press (dock tiles tilt in from that side).
+    private var wallpaperBmp: Bitmap? = null
+    private var wallpaperSmall: Bitmap? = null
+    private var shelfAt = 0
+    private var shelfSwap = 0 // bumps on every page turn, so a late text swap from an older turn is skipped
+    private var lastDir = 0
+    private var lastKeyAt = 0L
+    /** Full-screen artwork with its small copy for the glass, by URI. ~8 MB a picture at 1080p. */
+    private val heroes = object : LruCache<String, Pair<Bitmap, Bitmap>>(28 * 1024 * 1024) {
+        override fun sizeOf(key: String, value: Pair<Bitmap, Bitmap>) = value.first.byteCount + value.second.byteCount
+    }
+    private val heroWaiters = HashMap<String, MutableList<(Pair<Bitmap, Bitmap>) -> Unit>>() // UI thread only
     private lateinit var allApps: View
     private lateinit var allAppsGrid: GridLayout
     private lateinit var wifi: ImageView
@@ -239,13 +256,11 @@ class MainActivity : Activity() {
         super.onCreate(state)
         setContentView(R.layout.activity_main)
         appRow = findViewById(R.id.appRow)
-        watchRow = findViewById(R.id.watchRow)
-        watchTitle = findViewById(R.id.watchTitle)
-        watchScroll = findViewById(R.id.watchScroll)
         allApps = findViewById(R.id.allApps)
         allAppsGrid = findViewById(R.id.allAppsGrid)
         wifi = findViewById(R.id.wifi)
         applyTheme()
+        setupGlass()
         loadWallpaper()
 
         // Top bar: network, All apps, Android settings, launcher settings. Round, lit on focus.
@@ -256,13 +271,19 @@ class MainActivity : Activity() {
             R.id.launcherSettings to { unlock { openLauncherSettings() } },
         )) findViewById<ImageView>(id).apply {
             setColorFilter(fg)
-            val ring = GradientDrawable().apply { shape = GradientDrawable.OVAL }
+            // Small glass circles; focused, they turn solid white with a dark icon (tvOS).
+            val ring = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(0x26FFFFFF)
+                setStroke(1, 0x1FFFFFFF)
+            }
             background = ring
             setOnFocusChangeListener { v, focused ->
                 if (focused) lastTop = v
-                ring.setColor(if (!focused) 0 else if (dark) DARK_CARD_LIT[0] else Color.WHITE)
-                animate().scaleX(if (focused) 1.15f else 1f).scaleY(if (focused) 1.15f else 1f)
-                    .setDuration(160).setInterpolator(DECELERATE).start()
+                ring.setColor(if (focused) 0xFFF5F5F7.toInt() else 0x26FFFFFF)
+                setColorFilter(if (focused) 0xFF0A0A0A.toInt() else fg)
+                animate().scaleX(if (focused) 1.18f else 1f).scaleY(if (focused) 1.18f else 1f)
+                    .setDuration(Motion.FOCUS_MS).setInterpolator(Motion.EMPHASIZED).start()
             }
             setOnClickListener { action() }
         }
@@ -304,6 +325,7 @@ class MainActivity : Activity() {
         // Only rebuild what changed, so focus stays where it was when returning from an app.
         if (appsDirty) refreshApps() else if (appRow.childCount == 0) renderApps()
         refreshWatchNext()
+        scheduleShelfTick()
         showWeather()
         ui.removeCallbacks(weatherTick)
         ui.post(weatherTick)
@@ -344,6 +366,7 @@ class MainActivity : Activity() {
         ui.removeCallbacks(weatherTick)
         ui.removeCallbacks(themeTick)
         ui.removeCallbacks(wallpaperTick)
+        ui.removeCallbacks(shelfTick)
         if (editing) endEdit()
         super.onPause()
     }
@@ -357,6 +380,7 @@ class MainActivity : Activity() {
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
         posters.evictAll()
+        heroes.evictAll()
     }
 
     override fun onDestroy() {
@@ -649,7 +673,6 @@ class MainActivity : Activity() {
         if (editing) endEdit()
         if (settingsScrim.visibility == View.VISIBLE) closeLauncherSettings()
         if (allApps.visibility == View.VISIBLE) closeAllApps()
-        watchScroll.scrollTo(0, 0)
         appRow.getChildAt(0)?.requestFocus()
     }
 
@@ -663,7 +686,7 @@ class MainActivity : Activity() {
 
     // ---------- theme ----------
 
-    private fun wantDark() = prefersDark(prefs)
+    private fun wantDark() = true // the glass layout is dark only: white text on pictures
 
     private fun applyTheme() {
         dark = wantDark()
@@ -676,7 +699,7 @@ class MainActivity : Activity() {
         ground = if (dark) DARK_BG else 0xFFF3F5F7.toInt()
         findViewById<View>(R.id.root).setBackgroundColor(ground)
         allApps.setBackgroundColor(ground)
-        for (id in intArrayOf(R.id.clock, R.id.date, R.id.appsTitle, R.id.watchTitle, R.id.allAppsTitle, R.id.rowLabel, R.id.weather)) {
+        for (id in intArrayOf(R.id.clock, R.id.date, R.id.appsTitle, R.id.shelfSource, R.id.shelfTitle, R.id.shelfSub, R.id.allAppsTitle, R.id.rowLabel, R.id.weather)) {
             findViewById<TextView>(id).setTextColor(fg)
         }
         wifi.setColorFilter(fg)
@@ -717,11 +740,13 @@ class MainActivity : Activity() {
         else -> choice.substringAfter(':').substringBeforeLast('.').let { n -> WALLPAPER_NAMES[n]?.let { getString(it) } ?: n }
     }
 
+    /** The wallpaper is the backdrop whenever Continue Watching is empty (the Top Shelf's fallback). */
     private fun loadWallpaper() {
-        val view = findViewById<ImageView>(R.id.wallpaper)
         val choice = currentWallpaper()
         if (choice.startsWith("plain:")) { // the root's ground colour shows through
-            view.setImageDrawable(null)
+            wallpaperBmp = null
+            wallpaperSmall = null
+            if (watchList.isEmpty()) showBackdrop(null, null)
             return
         }
         val fallback = defaultWallpaper(dark)
@@ -733,14 +758,11 @@ class MainActivity : Activity() {
             } catch (e: OutOfMemoryError) { // a picture on a TV short of memory: show the default instead of crashing
                 null
             } ?: decodeWallpaper(fallback)
+            val small = bmp?.let { smallCopy(it) }
             ui.post {
-                val old = view.drawable
-                if (old == null || bmp == null) return@post view.setImageBitmap(bmp)
-                // Soft change from one photo to the next; then drop the old one so only one stays in memory.
-                val fade = TransitionDrawable(arrayOf(old, BitmapDrawable(resources, bmp))).apply { isCrossFadeEnabled = true }
-                view.setImageDrawable(fade)
-                fade.startTransition(800)
-                ui.postDelayed({ if (view.drawable === fade) view.setImageBitmap(bmp) }, 900)
+                wallpaperBmp = bmp
+                wallpaperSmall = small
+                if (watchList.isEmpty()) showBackdrop(bmp, small)
             }
         }
     }
@@ -1410,6 +1432,7 @@ class MainActivity : Activity() {
                     Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LEANBACK_LAUNCHER)
                         .setComponent(ComponentName(a.packageName, a.name)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                     a.loadIcon(pm),
+                    banner = a.loadBanner(pm),
                 )
             } + hdmiInputs()
     }
@@ -1477,7 +1500,7 @@ class MainActivity : Activity() {
     private fun alignRow() {
         val content = appRow.parent as View
         (content.layoutParams as FrameLayout.LayoutParams).gravity =
-            if (appTileCount() > ROW_TILES) Gravity.START else ROW_ALIGN[rowAlign()]!!.second
+            if (appTileCount() > DOCK_FIT) Gravity.START else ROW_ALIGN[rowAlign()]!!.second
         content.requestLayout()
     }
 
@@ -1487,16 +1510,18 @@ class MainActivity : Activity() {
         // First fill after a cold start: Android already gave the default focus to the top bar's first icon.
         val firstFill = appRow.childCount == 0 && currentFocus?.parent === wifi.parent
         val takeFocus = currentFocus == null || currentFocus?.parent === appRow || firstFill
-        val gap = dp(GRID_GAP)
-        val width = (resources.displayMetrics.widthPixels - dp(96) - gap * (ROW_TILES - 1)) / ROW_TILES
+        val gap = dp(DOCK_GAP)
+        // DOCK_FIT tiles exactly fill the glass panel (content width, plus the dock's 16 dp overhang each side, minus
+        // its 24 dp inner padding each side), 16:9 like Android TV app banners.
+        val width = (resources.displayMetrics.widthPixels - dp(96) + dp(32) - dp(48) - gap * (DOCK_FIT - 1)) / DOCK_FIT
         appRow.removeAllViews()
         val hidden = rowHiddenSet()
         val pinned = pinnedInputs()
-        val tiles = sortedApps().filter { inRow(it.pkg, it.offline, hidden, pinned) }.map { appTile(it, labeled = false) }
+        val tiles = sortedApps().filter { inRow(it.pkg, it.offline, hidden, pinned) }.map { dockTile(it) }
         if (tiles.isEmpty()) return showNames()
         tiles.forEachIndexed { i, t ->
             t.id = View.generateViewId()
-            appRow.addView(t, LinearLayout.LayoutParams(width, dp(76)).apply { if (i > 0) marginStart = gap })
+            appRow.addView(t, LinearLayout.LayoutParams(width, width * 9 / 16).apply { if (i > 0) marginStart = gap })
             val own = t.onFocusChangeListener
             t.setOnFocusChangeListener { v, focused ->
                 own.onFocusChange(v, focused)
@@ -1707,6 +1732,14 @@ class MainActivity : Activity() {
      * listener in style() is a fallback for remotes that send no repeats. [holdFired] stops both firing.
      */
     override fun dispatchKeyEvent(e: KeyEvent): Boolean {
+        if (e.action == KeyEvent.ACTION_DOWN) {
+            lastKeyAt = SystemClock.uptimeMillis()
+            lastDir = when (e.keyCode) {
+                KeyEvent.KEYCODE_DPAD_LEFT -> -1
+                KeyEvent.KEYCODE_DPAD_RIGHT -> 1
+                else -> 0
+            }
+        }
         val confirm = e.keyCode == KeyEvent.KEYCODE_DPAD_CENTER || e.keyCode == KeyEvent.KEYCODE_ENTER ||
             e.keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER
         if (confirm) {
@@ -1745,33 +1778,29 @@ class MainActivity : Activity() {
     private fun homeNav(v: View, key: Int): View? {
         fun alive(x: View?) = x?.takeIf { it.isAttachedToWindow }
         val apps = alive(lastApp)?.takeIf { it.parent === appRow } ?: appRow.getChildAt(0)
-        val cards = if (watchScroll.visibility != View.VISIBLE) null
-            else alive(lastCard) ?: (watchRow.getChildAt(0) as? ViewGroup)?.getChildAt(0)
         val top = alive(lastTop) ?: findViewById(R.id.launcherSettings)
+        val onShelf = shelf.takeIf { it.visibility == View.VISIBLE }
         return when {
             v.parent === wifi.parent -> when (key) { // top bar
-                KeyEvent.KEYCODE_DPAD_DOWN -> apps ?: cards ?: v // the apps row can be empty (all hidden)
+                KeyEvent.KEYCODE_DPAD_DOWN -> onShelf ?: apps ?: v // the apps row can be empty (all hidden)
                 KeyEvent.KEYCODE_DPAD_UP -> v
                 KeyEvent.KEYCODE_DPAD_LEFT -> if (v.id == R.id.wifi) v else null
                 KeyEvent.KEYCODE_DPAD_RIGHT -> if (v.id == R.id.launcherSettings) v else null
                 else -> null
             }
-            v.parent === appRow -> when (key) {
+            v === shelf -> when (key) { // Top Shelf: Left/Right page through Continue Watching
                 KeyEvent.KEYCODE_DPAD_UP -> top
-                KeyEvent.KEYCODE_DPAD_DOWN -> cards ?: v
+                KeyEvent.KEYCODE_DPAD_DOWN -> apps ?: v
+                KeyEvent.KEYCODE_DPAD_LEFT -> v.also { shelfStep(-1) }
+                KeyEvent.KEYCODE_DPAD_RIGHT -> v.also { shelfStep(1) }
+                else -> null
+            }
+            v.parent === appRow -> when (key) {
+                KeyEvent.KEYCODE_DPAD_UP -> onShelf ?: top
+                KeyEvent.KEYCODE_DPAD_DOWN -> v
                 KeyEvent.KEYCODE_DPAD_LEFT -> if (appRow.indexOfChild(v) == 0) v else null
                 KeyEvent.KEYCODE_DPAD_RIGHT -> if (appRow.indexOfChild(v) == appRow.childCount - 1) v else null
                 else -> null
-            }
-            v.getTag(R.id.watchRow) is Prog -> {
-                val i = watchRow.indexOfChild(v.parent as View)
-                when (key) {
-                    KeyEvent.KEYCODE_DPAD_UP -> apps ?: top
-                    KeyEvent.KEYCODE_DPAD_DOWN -> v
-                    KeyEvent.KEYCODE_DPAD_LEFT -> if (i == 0) v else null
-                    KeyEvent.KEYCODE_DPAD_RIGHT -> if (i == watchRow.childCount - 1) v else null
-                    else -> null
-                }
             }
             else -> null
         }
@@ -1803,7 +1832,7 @@ class MainActivity : Activity() {
                 appRow.getChildAt(0)?.requestFocus() // show the app just pinned
             }
             v.parent === appRow -> appMenu(v)
-            v.getTag(R.id.watchRow) is Prog -> watchMenu(v, v.getTag(R.id.watchRow) as Prog)
+            v.getTag(R.id.shelf) is Prog -> watchMenu(v, v.getTag(R.id.shelf) as Prog)
         }
     }
 
@@ -2139,6 +2168,8 @@ class MainActivity : Activity() {
     private fun availableUpdate() = prefs.getString("upd_ver", null)?.takeIf { newerVersion(it, myVersion()) }
 
     private fun checkUpdate(force: Boolean) {
+        // This is a personal fork: upstream releases are signed with another key and would replace the glass layout.
+        if (FORK) return
         if (checking || !force && System.currentTimeMillis() - prefs.getLong("upd_time", 0) < 24 * 3600_000L) return
         checking = true
         if (force) renderSettings(R.string.updates)
@@ -2527,7 +2558,16 @@ class MainActivity : Activity() {
                     if (duration > 0 && position in 1000 until duration) timeLeft(duration - position) else null,
                 ).joinToString(" - ")
                 val progress = if (duration > 0 && position >= 1000) (position * 100 / duration).toInt().coerceIn(0, 100) else 0
-                val prog = Prog(title, sub, progress, str("thumbnail_uri") ?: str("poster_art_uri"), str("intent_uri"), str("package_name"))
+                val poster = str("poster_art_uri")
+                val thumb = str("thumbnail_uri")
+                // Aspect ratio codes: 0 16:9, 1 3:2, 2 4:3 are landscape; missing (-1) is usually landscape too.
+                fun wide(col: String) = c.getColumnIndex(col).let { if (it < 0 || c.isNull(it)) -1 else c.getInt(it) } in -1..2
+                val art = when {
+                    poster != null && wide("poster_art_aspect_ratio") -> poster
+                    thumb != null && wide("thumbnail_aspect_ratio") -> thumb
+                    else -> poster ?: thumb
+                }
+                val prog = Prog(title, sub, progress, thumb ?: poster, str("intent_uri"), str("package_name"), art)
                 out += watchSortKey(num("watch_next_type"), num("last_engagement_time_utc_millis")) to prog
             }
         }
@@ -2560,103 +2600,301 @@ class MainActivity : Activity() {
         return if (min >= 60) getString(R.string.time_left_hm, min / 60, min % 60) else getString(R.string.time_left_m, min)
     }
 
+    // ---------- Top Shelf (tvOS): Continue Watching full screen, one item at a time ----------
+
+    private var watchList = emptyList<Prog>()
+
     private fun showWatchNext(list: List<Prog>) {
-        val key = list.joinToString("|") { "${it.title}/${it.sub}/${it.progress}/${it.image}" }
-        if (key == watchKey) { // unchanged: keep views (and focus) as they are, just fill in missing posters
+        val key = list.joinToString("|") { "${it.title}/${it.sub}/${it.progress}/${it.art}" }
+        if (key == watchKey) { // unchanged: keep the shelf where it is, just fetch a picture that never arrived
             retryPosters()
             return
         }
         watchKey = key
+        val was = watchList.getOrNull(shelfAt)
         watchList = list
-        val focusedAt = watchRow.indexOfChild(currentFocus?.parent as? View)
-        watchRow.removeAllViews()
-        val visible = if (list.isEmpty()) View.GONE else View.VISIBLE
-        watchTitle.visibility = visible
-        watchScroll.visibility = visible
-        // ~16 ms per card here and only four show at once: the first four now, the next four on the next frame.
-        addCardsTo(3)
-        ui.post { if (watchKey == key) addCardsTo(CARDS_AHEAD - 1) } // unless a newer list replaced this one
-        if (focusedAt >= 0) {
-            ((watchRow.getChildAt(focusedAt.coerceAtMost(watchRow.childCount - 1)) as? LinearLayout)?.getChildAt(0)
-                ?: appRow.getChildAt(0))?.requestFocus()
+        // Stay on the same show if it's still there (its progress may have changed), else start at the newest.
+        shelfAt = was?.let { w -> list.indexOfFirst { it.title == w.title && it.pkg == w.pkg } }?.takeIf { it >= 0 } ?: 0
+        if (list.isEmpty()) {
+            val had = shelf.hasFocus()
+            shelf.visibility = View.GONE
+            if (had) appRow.getChildAt(0)?.requestFocus()
+            ui.removeCallbacks(shelfTick)
+            showBackdrop(wallpaperBmp, wallpaperSmall)
+            return
         }
+        if (shelf.visibility != View.VISIBLE) {
+            shelf.visibility = View.VISIBLE
+            shelf.alpha = 0f
+            shelf.translationY = dpf(16f)
+            shelf.animate().alpha(1f).translationY(0f).setDuration(500).setInterpolator(Motion.EMPHASIZED).start()
+        }
+        bindShelf(0)
+        scheduleShelfTick()
     }
 
-    private var watchList = emptyList<Prog>()
+    private fun setupGlass() {
+        backdrop = findViewById(R.id.backdrop)
+        shelf = findViewById(R.id.shelf)
+        dock = findViewById(R.id.dock)
+        val scrimView = findViewById<View>(R.id.scrim)
+        val scrim = Glass.scrim()
+        scrimView.background = scrim
+        scrimView.addOnLayoutChangeListener { _, l, t, r, b, _, _, _, _ -> Glass.sizeScrim(scrim, r - l, b - t) }
+        // The dock: blurred copy of the backdrop at the back, the apps on top, a lit rim in front.
+        val radius = dpf(28f)
+        glass = GlassView(this)
+        dock.addView(glass, 0, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        Glass.round(dock, radius)
+        dock.foreground = Glass.rim(radius, resources.displayMetrics.density)
+        // The shelf is one focusable: OK resumes, holding OK opens the hide / open app menu.
+        shelf.setOnClickListener { watchList.getOrNull(shelfAt)?.let { open(it) } }
+        shelf.setOnLongClickListener { if (!holdFired) fireHold(shelf); true }
+        shelf.setOnFocusChangeListener { _, focused -> styleShelf(focused) }
+        findViewById<ProgressBar>(R.id.shelfProgress).progressDrawable = progressBarDrawable()
+        styleShelf(false)
+    }
 
-    /**
-     * Cards exist up to index [last] only: the four on screen and the four after them, more as focus moves on.
-     * Every card costs drawing time on each frame of the home screen (20 dropped ~6% of frames on the test
-     * TV, 8 about 2%), on screen or not, so the rest of the list waits until focus gets near.
-     */
-    private fun addCardsTo(last: Int) {
-        while (watchRow.childCount <= minOf(last, watchList.size - 1)) {
-            watchRow.addView(watchCard(watchList[watchRow.childCount], watchRow.childCount > 0))
-        }
+    /** Resume button: glass while the shelf rests, solid white with dark text once it's focused (tvOS buttons). */
+    private fun styleShelf(focused: Boolean) {
+        val play = findViewById<TextView>(R.id.shelfPlay)
+        val ink = if (focused) 0xFF0A0A0A.toInt() else DARK_TEXT
+        play.background = Glass.chip(dpf(18f), focused)
+        play.setTextColor(ink)
+        play.setCompoundDrawablesRelativeWithIntrinsicBounds(playGlyph(ink), null, null, null)
+        play.compoundDrawablePadding = dp(8)
+        play.pivotX = 0f
+        play.animate().scaleX(if (focused) 1.1f else 1f).scaleY(if (focused) 1.1f else 1f)
+            .setDuration(Motion.FOCUS_MS).setInterpolator(Motion.EMPHASIZED).start()
+    }
+
+    private fun playGlyph(color: Int) = ShapeDrawable(PathShape(Path().apply {
+        moveTo(0f, 0f); lineTo(10f, 6f); lineTo(0f, 12f); close()
+    }, 10f, 12f)).apply {
+        paint.color = color
+        paint.isAntiAlias = true
+        intrinsicWidth = dp(9)
+        intrinsicHeight = dp(11)
     }
 
     /**
-     * Four posters across, each two apps-row columns wide. Progress sits on the artwork's bottom edge;
-     * title and details (source, episode, time left) go underneath.
+     * Shows the current item. [dir] is the way the page turned (-1 left, 1 right, 0 no animation): the text
+     * slides out that way and the next item's text slides in from the other side, a line at a time, while the
+     * backdrop crossfades underneath.
      */
-    private fun watchCard(p: Prog, gapBefore: Boolean): View {
-        val gap = dp(GRID_GAP)
-        val w = (resources.displayMetrics.widthPixels - dp(96) - gap * 3) / 4
-        val col = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            clipChildren = false
-            layoutParams = LinearLayout.LayoutParams(w, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                if (gapBefore) marginStart = gap
+    private fun bindShelf(dir: Int) {
+        val p = watchList.getOrNull(shelfAt) ?: return
+        val src = findViewById<TextView>(R.id.shelfSource)
+        val title = findViewById<TextView>(R.id.shelfTitle)
+        val sub = findViewById<TextView>(R.id.shelfSub)
+        val bar = findViewById<ProgressBar>(R.id.shelfProgress)
+        val parts = listOf(src, title, sub, bar)
+        val rest = mapOf<View, Float>(src to 0.75f, title to 1f, sub to 0.9f, bar to 1f)
+        val fill = {
+            src.text = apps.firstOrNull { it.pkg == p.pkg }?.label.orEmpty()
+            title.text = p.title
+            sub.text = p.sub
+            sub.visibility = if (p.sub.isEmpty()) View.GONE else View.VISIBLE
+            bar.progress = p.progress
+            bar.visibility = if (p.progress > 0) View.VISIBLE else View.GONE
+            shelf.contentDescription = p.title
+            shelf.setTag(R.id.shelf, p) // holding OK hides it (see onHold)
+            showDots()
+        }
+        val swap = ++shelfSwap
+        if (dir == 0) {
+            parts.forEach { it.animate().cancel(); it.alpha = rest[it]!!; it.translationX = 0f }
+            fill()
+        } else {
+            parts.forEach {
+                it.animate().alpha(0f).translationX(-dir * dpf(24f)).setStartDelay(0).setDuration(140)
+                    .setInterpolator(Motion.STANDARD).start()
             }
-        }
-        val img = ImageView(this).apply {
-            scaleType = ImageView.ScaleType.CENTER_CROP
-            setBackgroundColor(if (dark) DARK_SURFACE else 0xFFDDE1E5.toInt())
-        }
-        // Long titles scroll while their poster is focused instead of staying cut off.
-        val title = label(p.title, 14f).apply {
-            setPadding(0, dp(6), 0, 0)
-            isSingleLine = true
-            ellipsize = TextUtils.TruncateAt.MARQUEE
-            marqueeRepeatLimit = -1
-        }
-        val frame = FrameLayout(this)
-        style(frame, dp(8), card = true, lift = 1.1f) { focused ->
-            title.isSelected = focused
-            if (focused) {
-                lastCard = frame
-                addCardsTo(watchRow.indexOfChild(col) + CARDS_AHEAD)
-            }
-        }
-        frame.contentDescription = p.title
-        frame.addView(img, MATCH_PARENT, MATCH_PARENT)
-        frame.setOnClickListener { open(p) }
-        frame.setTag(R.id.watchRow, p) // holding OK hides it (see onHold)
-        // 2:1 keeps logos and badges that providers bake into 16:9 art.
-        col.addView(frame, LinearLayout.LayoutParams(w, w / 2))
-        // Thin bar under the poster, card width. Kept (invisible) when there's no progress so titles line up.
-        col.addView(ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
-            max = 100
-            progress = p.progress
-            progressDrawable = progressBarDrawable()
-            visibility = if (p.progress > 0) View.VISIBLE else View.INVISIBLE
-        }, LinearLayout.LayoutParams(w, dp(3)).apply { topMargin = dp(8) })
-        col.addView(title)
-        val icon = sourceIcon(p.pkg)
-        if (p.sub.isNotEmpty() || icon != null) {
-            col.addView(label(p.sub, 12f).apply {
-                alpha = 0.8f
-                setPadding(0, dp(2), 0, 0)
-                icon?.let {
-                    it.setBounds(0, 0, dp(12), dp(12))
-                    setCompoundDrawablesRelative(it, null, null, null)
-                    compoundDrawablePadding = dp(6)
+            ui.postDelayed({
+                if (swap != shelfSwap) return@postDelayed // another turn came in meanwhile; it does the text
+                fill()
+                parts.forEachIndexed { i, v ->
+                    v.translationX = dir * dpf(32f)
+                    v.animate().alpha(rest[v]!!).translationX(0f).setStartDelay(i * 35L).setDuration(380)
+                        .setInterpolator(Motion.EMPHASIZED).start()
                 }
-            })
+            }, 150)
         }
-        loadPoster(img, p.image)
-        return col
+        loadHero(p)
+        // Fetch the neighbours now, so turning the page shows their picture straight away.
+        watchList.getOrNull(shelfAt + 1)?.let { prefetchHero(it) }
+        watchList.getOrNull(shelfAt - 1)?.let { prefetchHero(it) }
     }
+
+    /** iOS page dots: one per item (up to 12), the current one a longer pill. */
+    private fun showDots() {
+        val row = findViewById<LinearLayout>(R.id.shelfDots)
+        row.removeAllViews()
+        val n = minOf(watchList.size, 12)
+        if (n < 2) return
+        for (i in 0 until n) {
+            val on = i == shelfAt.coerceAtMost(n - 1)
+            row.addView(View(this).apply {
+                background = GradientDrawable().apply {
+                    cornerRadius = dpf(3f)
+                    setColor(if (on) 0xFFFFFFFF.toInt() else 0x59FFFFFF)
+                }
+            }, LinearLayout.LayoutParams(dp(if (on) 18 else 6), dp(6)).apply { if (i > 0) marginStart = dp(6) })
+        }
+    }
+
+    private fun shelfStep(d: Int) {
+        val next = shelfAt + d
+        if (next !in watchList.indices) { // at the end: a small bump, like tvOS
+            shelf.animate().translationX(d * dpf(10f)).setDuration(90).setInterpolator(Motion.STANDARD)
+                .withEndAction { shelf.animate().translationX(0f).setDuration(260).setInterpolator(Motion.EMPHASIZED).start() }
+                .start()
+            return
+        }
+        shelfAt = next
+        bindShelf(d)
+    }
+
+    /** While focus is elsewhere (the dock), the shelf turns on its own every few seconds, after the remote goes quiet. */
+    private val shelfTick = object : Runnable {
+        override fun run() {
+            if (watchList.size > 1 && !shelf.hasFocus() && SystemClock.uptimeMillis() - lastKeyAt > 6_000L &&
+                settingsScrim.visibility != View.VISIBLE && allApps.visibility != View.VISIBLE
+            ) {
+                shelfAt = (shelfAt + 1) % watchList.size
+                bindShelf(1)
+            }
+            ui.postDelayed(this, SHELF_EVERY)
+        }
+    }
+
+    private fun scheduleShelfTick() {
+        ui.removeCallbacks(shelfTick)
+        if (watchList.size > 1) ui.postDelayed(shelfTick, SHELF_EVERY)
+    }
+
+    private fun showBackdrop(big: Bitmap?, small: Bitmap?) {
+        backdrop.show(big)
+        glass.show(small)
+    }
+
+    private fun loadHero(p: Prog) {
+        val uri = p.art ?: p.image ?: return showBackdrop(wallpaperBmp, wallpaperSmall)
+        heroes.get(uri)?.let { return showBackdrop(it.first, it.second) }
+        fetchHero(uri) { pair -> if (watchList.getOrNull(shelfAt)?.let { it.art ?: it.image } == uri) showBackdrop(pair.first, pair.second) }
+    }
+
+    private fun prefetchHero(p: Prog) {
+        val uri = p.art ?: p.image ?: return
+        if (heroes.get(uri) == null) fetchHero(uri) {}
+    }
+
+    /** One download per picture: later askers (the shelf landing on a prefetching item) wait for the same one. */
+    private fun fetchHero(uri: String, then: (Pair<Bitmap, Bitmap>) -> Unit) {
+        heroWaiters[uri]?.let { it += then; return }
+        heroWaiters[uri] = mutableListOf(then)
+        posterIo.execute {
+            val pair = try {
+                decodeHero(uri)?.let { it to smallCopy(it) }
+            } catch (e: Exception) {
+                android.util.Log.w("TvHome", "artwork failed: $uri ($e)")
+                null
+            } catch (e: OutOfMemoryError) {
+                null
+            }
+            ui.post {
+                val waiting = heroWaiters.remove(uri) ?: return@post
+                if (pair == null) return@post // retried by retryPosters() when the network comes back
+                heroes.put(uri, pair)
+                waiting.forEach { it(pair) }
+            }
+        }
+    }
+
+    /** Full-screen artwork: full colour (posters band in RGB_565 when this large), no bigger than the screen. */
+    private fun decodeHero(uri: String): Bitmap? {
+        val bytes = openStream(uri).use { it.readBytes() }
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        val target = resources.displayMetrics.widthPixels
+        var sample = 1
+        while (bounds.outWidth / (sample * 2) >= target) sample *= 2
+        return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })
+    }
+
+    /** The glass only ever shows a heavy blur of the picture, so a tiny copy looks the same and costs ~200 KB. */
+    private fun smallCopy(b: Bitmap): Bitmap = Bitmap.createScaledBitmap(b, 320, maxOf(1, 320 * b.height / b.width), true)
+
+    /**
+     * Dock tile, tvOS style: the app's own Android TV banner (full colour, 16:9), or its logo on a glass tile
+     * when it has none (HDMI inputs, phone apps). Lifts, tilts in and catches a sheen of light on focus.
+     */
+    private fun dockTile(a: App): View {
+        val frame = FrameLayout(this)
+        val img = ImageView(this)
+        val art = customIcon(a.pkg) ?: a.banner?.let { it.constantState?.newDrawable(resources) ?: it }
+        if (art != null) {
+            img.setImageDrawable(art)
+            img.scaleType = ImageView.ScaleType.CENTER_CROP
+            frame.background = ColorDrawable(0xFF1C1C1E.toInt())
+            frame.addView(img, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        } else {
+            val logo = LOGOS[a.pkg]
+            val mark = when {
+                logo != null -> getDrawable(logo.first)!!.mutate().apply { setTint(BRAND_COLOURS[a.pkg] ?: DARK_TEXT) }
+                a.pkg.startsWith(HDMI) -> (a.icon.constantState?.newDrawable(resources) ?: a.icon).mutate().apply { setTint(DARK_TEXT) }
+                else -> a.icon.constantState?.newDrawable(resources) ?: a.icon
+            }
+            img.setImageDrawable(mark)
+            img.scaleType = ImageView.ScaleType.FIT_CENTER
+            frame.background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(0x40FFFFFF, 0x1AFFFFFF))
+            frame.addView(img, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT).apply { setMargins(dp(28), dp(14), dp(28), dp(14)) })
+        }
+        focusLift(frame, dpf(12f))
+        frame.tag = a.pkg
+        frame.contentDescription = a.label
+        frame.setOnClickListener { launch(a) }
+        return frame
+    }
+
+    /**
+     * tvOS focus: the tile grows and rises (with a real shadow), turns in from the side focus came from, and a
+     * diagonal sheen of light fades in across it. Unfocused tiles rest slightly dimmed.
+     */
+    private fun focusLift(v: View, radius: Float) {
+        val sheen = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(0x66FFFFFF, 0x0FFFFFFF, 0x00FFFFFF)).apply {
+            cornerRadius = radius
+            alpha = 0
+        }
+        val rim = GradientDrawable().apply {
+            cornerRadius = radius
+            setColor(0)
+            setStroke(1, 0x33FFFFFF)
+        }
+        v.foreground = LayerDrawable(arrayOf(sheen, rim))
+        Glass.round(v, radius)
+        v.cameraDistance = 9000 * resources.displayMetrics.density
+        v.alpha = REST_ALPHA
+        v.isFocusable = true
+        v.isClickable = true
+        v.setOnLongClickListener { if (!holdFired) fireHold(v); true }
+        v.setOnFocusChangeListener { _, focused ->
+            if (focused && lastDir != 0 && !editing) v.rotationY = -lastDir * 10f
+            ValueAnimator.ofInt(sheen.alpha, if (focused) 255 else 0).apply {
+                duration = Motion.FOCUS_MS
+                addUpdateListener { sheen.alpha = it.animatedValue as Int }
+                start()
+            }
+            v.animate()
+                .scaleX(if (focused) FOCUS_SCALE else 1f).scaleY(if (focused) FOCUS_SCALE else 1f)
+                .translationZ(if (focused) dpf(18f) else 0f)
+                .rotationY(0f)
+                .alpha(if (focused) 1f else REST_ALPHA)
+                .setDuration(Motion.FOCUS_MS).setInterpolator(Motion.EMPHASIZED).start()
+        }
+    }
+
+    private fun dpf(v: Float) = v * resources.displayMetrics.density
 
     private fun progressBarDrawable(): Drawable {
         fun bar(color: Int) = GradientDrawable().apply { cornerRadius = dp(2).toFloat(); setColor(color) }
@@ -2697,12 +2935,9 @@ class MainActivity : Activity() {
         }
     }
 
-    /** Cards whose poster never arrived (offline, server timeout) try again; loaded ones are left alone. */
+    /** The shelf's picture never arrived (offline, server timeout): try again. Loaded ones are left alone. */
     private fun retryPosters() {
-        for (i in 0 until watchRow.childCount) {
-            val img = ((watchRow.getChildAt(i) as? ViewGroup)?.getChildAt(0) as? ViewGroup)?.getChildAt(0) as? ImageView ?: continue
-            if (img.drawable == null) loadPoster(img, img.tag as? String)
-        }
+        watchList.getOrNull(shelfAt)?.let { loadHero(it) }
     }
 
     /** Downsample to card size in RGB_565 so a dozen posters stay around 1-2 MB. */
@@ -2841,6 +3076,12 @@ class MainActivity : Activity() {
         const val TV_SETTINGS = "com.android.tv.settings"
         const val HDMI = "hdmi:" // App.pkg prefix for HDMI device tiles; the rest is the TV input id
         const val ROW_TILES = 8
+        const val DOCK_FIT = 6 // dock tiles across the glass panel
+        const val DOCK_GAP = 18 // dp
+        const val SHELF_EVERY = 9_000L // Top Shelf turns to the next item this often while it isn't focused
+        const val FORK = true
+        const val FOCUS_SCALE = 1.14f
+        const val REST_ALPHA = 0.88f
         const val GRID_GAP = 16 // dp; shared by the apps row and the cards so their columns line up
         /** Shown names for the wallpaper keys saved in prefs (the keys stay English). */
         val WALLPAPER_NAMES = mapOf(

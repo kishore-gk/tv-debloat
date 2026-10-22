@@ -90,6 +90,7 @@
     <string name="pin_hint">▲ ▼ change  ·  ◀ ▶ move  ·  OK enter. Number keys work too.</string>
     <string name="pin_forgot">Forgot it? Android Settings → Apps → Plume → Clear data removes the lock, along with your layout and settings.</string>
     <string name="tip_move">Tip: hold OK on an app to rearrange the row</string>
+    <string name="resume">Resume</string>
     <string name="open">Open</string>
     <string name="move">Move</string>
     <string name="remove_from_row">Remove from row</string>

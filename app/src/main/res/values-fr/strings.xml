@@ -90,6 +90,7 @@
     <string name="pin_hint">▲ ▼ changer  ·  ◀ ▶ déplacer  ·  OK valider. Les touches numériques fonctionnent aussi.</string>
     <string name="pin_forgot">Oublié ? Paramètres Android → Applis → Plume → Effacer les données supprime le verrou, ainsi que votre disposition et vos paramètres.</string>
     <string name="tip_move">Astuce : maintenez OK sur une appli pour réorganiser la ligne</string>
+    <string name="resume">Reprendre</string>
     <string name="open">Ouvrir</string>
     <string name="move">Déplacer</string>
     <string name="remove_from_row">Retirer de la ligne</string>
