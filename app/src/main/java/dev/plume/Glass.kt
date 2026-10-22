@@ -15,6 +15,7 @@ import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
 import android.graphics.Matrix
 import android.graphics.Outline
+import android.graphics.Path
 import android.graphics.Paint
 import android.graphics.RenderEffect
 import android.graphics.Shader
@@ -41,7 +42,7 @@ internal object Motion {
     const val FOCUS_MS = 260L
     const val FADE_MS = 700L
     const val KEN_BURNS_MS = 16_000L
-    const val KEN_BURNS_SCALE = 1.06f
+    const val KEN_BURNS_SCALE = 1.04f
 }
 
 /**
@@ -164,79 +165,103 @@ class GlassView(context: Context) : View(context) {
     }
 }
 
-internal object Glass {
-    /** Rounded clip for a glass panel, so the blur and the tiles' glow stay inside its corners. */
-    fun round(v: View, radius: Float) {
+/**
+ * Apple's continuous ("squircle") corners: the curve eases into the straight edge instead of meeting it at a
+ * point, which is what makes iOS shapes look soft. Bezier points from PaintCode's measurement of UIKit's
+ * rounded rect, for one corner, mirrored to the other three.
+ */
+internal object Smooth {
+    private const val EDGE = 1.52866483f
+    // One corner from the top edge to the right edge, as (inset from the side, inset from the top) in radii.
+    private val CORNER = floatArrayOf(
+        1.08849323f, 0f, 0.86840689f, 0f, 0.66993427f, 0.06549600f, // cubic
+        0.63149399f, 0.07491100f, // line
+        0.37282392f, 0.16905899f, 0.16906013f, 0.37282401f, 0.07491176f, 0.63149399f, // cubic
+        0.06549600f, 0.66993427f, // line
+        0f, 0.86840701f, 0f, 1.08849299f, 0f, EDGE, // cubic
+    )
+
+    fun path(out: Path, l: Float, t: Float, r: Float, b: Float, radius: Float): Path {
+        out.reset()
+        val rr = minOf(radius, minOf(r - l, b - t) / 2f / EDGE)
+        // Corner maps from (u, v) template space to the four corners, clockwise from the top right.
+        val maps: Array<(Float, Float) -> Pair<Float, Float>> = arrayOf(
+            { u, v -> (r - u * rr) to (t + v * rr) },
+            { u, v -> (r - v * rr) to (b - u * rr) },
+            { u, v -> (l + u * rr) to (b - v * rr) },
+            { u, v -> (l + v * rr) to (t + u * rr) },
+        )
+        maps.forEachIndexed { i, m ->
+            val (sx, sy) = m(EDGE, 0f)
+            if (i == 0) out.moveTo(sx, sy) else out.lineTo(sx, sy)
+            var k = 0
+            fun pt(): Pair<Float, Float> = m(CORNER[k], CORNER[k + 1]).also { k += 2 }
+            fun cubic() { val a = pt(); val c = pt(); val e = pt(); out.cubicTo(a.first, a.second, c.first, c.second, e.first, e.second) }
+            fun line() { val a = pt(); out.lineTo(a.first, a.second) }
+            cubic(); line(); cubic(); line(); cubic()
+        }
+        out.close()
+        return out
+    }
+
+    /** Clip a view to continuous corners (Android 13+ can clip to any path; older ones get a plain round rect). */
+    fun clip(v: View, radius: Float) {
         v.outlineProvider = object : ViewOutlineProvider() {
-            override fun getOutline(view: View, o: Outline) = o.setRoundRect(0, 0, view.width, view.height, radius)
+            private val p = Path()
+            override fun getOutline(view: View, o: Outline) {
+                if (Build.VERSION.SDK_INT >= 33) o.setPath(path(p, 0f, 0f, view.width.toFloat(), view.height.toFloat(), radius))
+                else o.setRoundRect(0, 0, view.width, view.height, radius)
+            }
         }
         v.clipToOutline = true
     }
+}
 
-    /**
-     * The glass edge, drawn over the panel: a hairline rim, brighter along the top where light catches it.
-     * Clear inside, so it can sit in front of the content.
-     */
-    fun rim(radius: Float, density: Float): Drawable {
-        val edge = GradientDrawable().apply {
-            cornerRadius = radius
-            setColor(0)
-            setStroke(maxOf(1, density.toInt()), 0x2EFFFFFF) // white 18%
-        }
-        val top = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(0x1FFFFFFF, 0x00FFFFFF)).apply {
-            cornerRadius = radius
-        }
-        return LayerDrawable(arrayOf(top, edge)).apply {
-            setLayerGravity(0, Gravity.TOP or Gravity.FILL_HORIZONTAL)
-            setLayerHeight(0, (radius * 1.5f).toInt())
-        }
-    }
+internal object Glass {
+    /** Continuous-corner clip for a glass panel, so the blur and the tiles' glow stay inside its corners. */
+    fun round(v: View, radius: Float) = Smooth.clip(v, radius)
 
-    /** A small glass pill or circle (buttons on the picture): translucent white, hairline rim. */
+    /** The glass edge, drawn over a panel: a hairline rim, brightest along the top where light catches it. */
+    fun rim(radius: Float, density: Float): Drawable = RimDrawable(radius, density, 0x47FFFFFF, 0x14FFFFFF)
+
+    /** A small glass pill (buttons on the picture): translucent white with a hairline rim, solid white when lit. */
     fun chip(radius: Float, lit: Boolean): Drawable = GradientDrawable().apply {
         cornerRadius = radius
-        setColor(if (lit) 0xFFF5F5F7.toInt() else 0x33FFFFFF)
-        if (!lit) setStroke(1, 0x26FFFFFF)
-    }
-
-    /**
-     * Darkening over the backdrop so white text reads on any picture: strong on the left behind the show's
-     * title, at the bottom behind the dock, and a little at the top behind the clock.
-     */
-    fun scrim(): Drawable = LayerDrawable(arrayOf(
-        GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, intArrayOf(0xD9000000.toInt(), 0x80000000.toInt(), 0x00000000)).apply { setDither(true) },
-        GradientDrawable(GradientDrawable.Orientation.BOTTOM_TOP, intArrayOf(0xF2000000.toInt(), 0x99000000.toInt(), 0x00000000)).apply { setDither(true) },
-        GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(0x8C000000.toInt(), 0x00000000)).apply { setDither(true) },
-        ColorDrawable(0x14000000),
-    )).apply {
-        setLayerGravity(0, Gravity.START or Gravity.FILL_VERTICAL)
-        setLayerGravity(1, Gravity.BOTTOM or Gravity.FILL_HORIZONTAL)
-        setLayerGravity(2, Gravity.TOP or Gravity.FILL_HORIZONTAL)
-    }
-
-    /** Sizes the scrim's bands to the screen once it is laid out (gravity layers need explicit sizes). */
-    fun sizeScrim(d: Drawable, w: Int, h: Int) {
-        (d as LayerDrawable).apply {
-            setLayerWidth(0, (w * 0.62f).toInt())
-            setLayerHeight(1, (h * 0.62f).toInt())
-            setLayerHeight(2, (h * 0.28f).toInt())
-        }
+        setColor(if (lit) 0xFFF5F5F7.toInt() else 0x38FFFFFF)
+        if (!lit) setStroke(1, 0x33FFFFFF)
     }
 }
 
+/** A hairline glass rim on continuous corners: [top] colour along the top edge fading to [bottom] at the bottom. */
+class RimDrawable(private val radius: Float, density: Float, private val top: Int, private val bottom: Int) : Drawable() {
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = maxOf(1f, density) }
+    private val path = Path()
+
+    override fun onBoundsChange(b: android.graphics.Rect) {
+        val i = paint.strokeWidth / 2
+        Smooth.path(path, b.left + i, b.top + i, b.right - i, b.bottom - i, radius)
+        paint.shader = LinearGradient(0f, b.top.toFloat(), 0f, b.bottom.toFloat(), top, bottom, Shader.TileMode.CLAMP)
+    }
+
+    override fun draw(c: Canvas) = c.drawPath(path, paint)
+    override fun setAlpha(alpha: Int) {}
+    override fun setColorFilter(cf: ColorFilter?) {}
+    @Deprecated("Deprecated in Java")
+    override fun getOpacity() = PixelFormat.TRANSLUCENT
+}
+
 /**
- * iOS "Liquid Glass" focus lens: one glass plate behind the focused dock tile. When focus moves it glides to the
- * next tile on a spring, stretching along the way it travels and squashing a little, then settles with a soft
- * wobble. A bright rim (lit from the top left) and a gloss on its upper half make it read as a piece of glass.
+ * iOS "Liquid Glass" focus lens: one glass plate behind the focused dock tile, its corners concentric with the
+ * tile's. When focus moves it glides to the next tile on a spring, stretching along the way it travels and
+ * squashing a little, then settles with a soft wobble. A rim lit from the top left and a gloss on its upper half
+ * make it read as a piece of glass.
  */
-class FocusLens(context: Context) : View(context) {
+class FocusLens(context: Context, private val radius: Float) : View(context) {
     private val d = resources.displayMetrics.density
-    private val radius = 18f * d
-    private val box = RectF()
-    private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x2EFFFFFF }
+    private val shape = Path()
+    private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x2BFFFFFF }
     private val gloss = Paint(Paint.ANTI_ALIAS_FLAG)
     private val rim = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 1.5f * d }
-    private val glow = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 6f * d; color = 0x14FFFFFF }
 
     // Spring state, in px and px/s along x (the dock only moves sideways).
     private var x = 0f
@@ -249,21 +274,25 @@ class FocusLens(context: Context) : View(context) {
     init {
         importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
         alpha = 0f
+        // Soft shadow under the glass plate, like iOS controls floating over content.
+        outlineProvider = object : ViewOutlineProvider() {
+            override fun getOutline(view: View, o: Outline) = o.setRoundRect(0, 0, view.width, view.height, radius)
+        }
+        elevation = 6f * d
     }
 
     override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
+        val i = rim.strokeWidth / 2
+        Smooth.path(shape, i, i, w - i, h - i, radius)
         rim.shader = LinearGradient(0f, 0f, w.toFloat(), h.toFloat(),
-            intArrayOf(0xCCFFFFFF.toInt(), 0x33FFFFFF, 0x1AFFFFFF, 0x66FFFFFF), floatArrayOf(0f, 0.45f, 0.75f, 1f), Shader.TileMode.CLAMP)
-        gloss.shader = LinearGradient(0f, 0f, 0f, h * 0.55f, 0x33FFFFFF, 0x00FFFFFF, Shader.TileMode.CLAMP)
+            intArrayOf(0xD9FFFFFF.toInt(), 0x40FFFFFF, 0x1AFFFFFF, 0x73FFFFFF), floatArrayOf(0f, 0.4f, 0.72f, 1f), Shader.TileMode.CLAMP)
+        gloss.shader = LinearGradient(0f, 0f, 0f, h * 0.55f, 0x38FFFFFF, 0x00FFFFFF, Shader.TileMode.CLAMP)
     }
 
     override fun onDraw(c: Canvas) {
-        val inset = rim.strokeWidth / 2
-        box.set(inset, inset, width - inset, height - inset)
-        c.drawRoundRect(box, radius, radius, glow)
-        c.drawRoundRect(box, radius, radius, fill)
-        c.drawRoundRect(box, radius, radius, gloss)
-        c.drawRoundRect(box, radius, radius, rim)
+        c.drawPath(shape, fill)
+        c.drawPath(shape, gloss)
+        c.drawPath(shape, rim)
     }
 
     /** Glide to [tx] (in the parent's coordinates); [y] is set at once. Appears in place if it was hidden. */
@@ -275,9 +304,9 @@ class FocusLens(context: Context) : View(context) {
             x = tx
             v = 0f
             translationX = tx
-            scaleX = 0.92f
-            scaleY = 0.92f
-            animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(320).setInterpolator(Motion.EMPHASIZED).start()
+            scaleX = 0.9f
+            scaleY = 0.9f
+            animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(360).setInterpolator(Motion.EMPHASIZED).start()
             return
         }
         if (!running) {
@@ -308,9 +337,9 @@ class FocusLens(context: Context) : View(context) {
             x += v * h
         }
         translationX = x
-        val stretch = (kotlin.math.abs(v) / (width.coerceAtLeast(1) * 14f)).coerceAtMost(0.32f)
+        val stretch = (kotlin.math.abs(v) / (width.coerceAtLeast(1) * 14f)).coerceAtMost(0.3f)
         scaleX = 1f + stretch
-        scaleY = 1f - stretch * 0.22f
+        scaleY = 1f - stretch * 0.2f
         if (kotlin.math.abs(x - target) < 0.5f && kotlin.math.abs(v) < 8f) {
             x = target
             translationX = x
@@ -330,7 +359,8 @@ class FocusLens(context: Context) : View(context) {
 
 /**
  * Light passing over glass: a diagonal band of light that sweeps across a tile when it gets focus (in the direction
- * focus moved), plus a soft gloss on the tile's top half and a hairline rim. [level] 0..1 fades it all in and out.
+ * focus moved), a soft gloss on the tile's top half, and a hairline rim on continuous corners.
+ * [level] 0..1 fades the light in and out.
  */
 class SheenDrawable(private val radius: Float, private val density: Float) : Drawable() {
     var progress = 0f
@@ -341,28 +371,85 @@ class SheenDrawable(private val radius: Float, private val density: Float) : Dra
     private val band = Paint(Paint.ANTI_ALIAS_FLAG)
     private val top = Paint(Paint.ANTI_ALIAS_FLAG)
     private val rim = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = maxOf(1f, density) }
-    private val box = RectF()
+    private val shape = Path()
+    private val edge = Path()
+
+    override fun onBoundsChange(b: android.graphics.Rect) {
+        Smooth.path(shape, b.left.toFloat(), b.top.toFloat(), b.right.toFloat(), b.bottom.toFloat(), radius)
+        val i = rim.strokeWidth / 2
+        Smooth.path(edge, b.left + i, b.top + i, b.right - i, b.bottom - i, radius)
+    }
 
     override fun draw(c: Canvas) {
         val b = bounds
         val w = b.width().toFloat()
         val h = b.height().toFloat()
-        box.set(b)
         val a = (level * 255).toInt()
         if (a > 0) {
-            top.shader = LinearGradient(0f, b.top.toFloat(), 0f, b.top + h * 0.5f, Color.argb(a * 40 / 255, 255, 255, 255), 0, Shader.TileMode.CLAMP)
-            c.drawRoundRect(box, radius, radius, top)
+            top.shader = LinearGradient(0f, b.top.toFloat(), 0f, b.top + h * 0.5f, Color.argb(a * 46 / 255, 255, 255, 255), 0, Shader.TileMode.CLAMP)
+            c.drawPath(shape, top)
             val cx = b.left - w * 0.5f + progress * w * 2f
             band.shader = LinearGradient(cx - w * 0.35f, b.top.toFloat(), cx + w * 0.35f, b.top + h,
                 intArrayOf(0, Color.argb(a * 90 / 255, 255, 255, 255), 0), floatArrayOf(0f, 0.5f, 1f), Shader.TileMode.CLAMP)
-            c.drawRoundRect(box, radius, radius, band)
+            c.drawPath(shape, band)
         }
-        rim.color = Color.argb(46 + (level * 70).toInt(), 255, 255, 255)
-        c.drawRoundRect(box, radius, radius, rim)
+        rim.color = Color.argb(51 + (level * 77).toInt(), 255, 255, 255)
+        c.drawPath(edge, rim)
     }
 
     override fun setAlpha(alpha: Int) {}
     override fun setColorFilter(cf: ColorFilter?) {}
     @Deprecated("Deprecated in Java")
     override fun getOpacity() = PixelFormat.TRANSLUCENT
+}
+
+/**
+ * Lock-screen glass digits (iOS 26): the clock is cut out of frosted glass. Each glyph shows the blurred picture
+ * behind it, brightened, with a light edge along the top that fades down the strokes; no flat white fill.
+ * [source] is the same small copy of the backdrop the dock's glass uses; scaled up, it is already soft.
+ */
+class GlassClock(context: Context, attrs: AttributeSet?) : android.widget.TextClock(context, attrs) {
+    var source: Bitmap? = null
+        set(v) { field = v; invalidate() }
+
+    private val pic = Paint(Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG).apply {
+        xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.SRC_IN)
+        colorFilter = ColorMatrixColorFilter(ColorMatrix().apply { setSaturation(1.6f) })
+    }
+    private val frost = Paint().apply {
+        xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.SRC_ATOP)
+    }
+    private val m = Matrix()
+    private val at = IntArray(2)
+    private val rootAt = IntArray(2)
+    private val edge = 1.4f * resources.displayMetrics.density
+
+    override fun onDraw(c: Canvas) {
+        val p = paint
+        // 1. The glyphs as a mask, then the blurred picture inside them, lightened like frosted glass.
+        val layer = c.saveLayer(0f, 0f, width.toFloat(), height.toFloat(), null)
+        p.style = Paint.Style.FILL
+        super.onDraw(c)
+        val b = source
+        if (b != null) {
+            val root = rootView
+            getLocationInWindow(at)
+            root.getLocationInWindow(rootAt)
+            val s = maxOf(root.width.toFloat() / b.width, root.height.toFloat() / b.height)
+            m.setScale(s, s)
+            m.postTranslate((root.width - b.width * s) / 2f - (at[0] - rootAt[0]) + scrollX, (root.height - b.height * s) / 2f - (at[1] - rootAt[1]) + scrollY)
+            c.drawBitmap(b, m, pic)
+        }
+        frost.shader = LinearGradient(0f, 0f, 0f, height.toFloat(), if (b == null) 0xF2FFFFFF.toInt() else 0x8CFFFFFF.toInt(),
+            if (b == null) 0xD9FFFFFF.toInt() else 0x59FFFFFF, Shader.TileMode.CLAMP)
+        c.drawPaint(frost)
+        c.restoreToCount(layer)
+        // 2. The lit edge: a thin stroke, bright at the top of each glyph and fading towards the bottom.
+        p.style = Paint.Style.STROKE
+        p.strokeWidth = edge
+        p.shader = LinearGradient(0f, 0f, 0f, height.toFloat(), 0xF2FFFFFF.toInt(), 0x40FFFFFF, Shader.TileMode.CLAMP)
+        super.onDraw(c)
+        p.shader = null
+        p.style = Paint.Style.FILL
+    }
 }

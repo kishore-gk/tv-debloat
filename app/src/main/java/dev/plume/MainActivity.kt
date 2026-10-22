@@ -169,6 +169,27 @@ internal fun isAudioDevice(name: String) = name.lowercase().let { n -> AUDIO_WOR
 internal fun inRow(pkg: String, offline: Boolean, hidden: Set<String>, pinned: Set<String>) =
     pkg !in hidden && (!offline || pkg in pinned)
 
+/**
+ * Links to the same picture at screen size, for image servers that take the size in the link. Apps often hand the
+ * launcher a thumbnail-sized link; these servers resize on request, so asking for [w] px gets a sharp picture.
+ * Covers Cloudinary-style transforms (w_384,h_216: JioHotstar, SonyLIV and many others), Amazon's image service
+ * suffixes (._V1_SX300_.jpg: Prime Video), YouTube thumbnail names, and width/height query parameters.
+ */
+internal fun hiResArt(u: String, w: Int): List<String> {
+    if (!u.startsWith("http")) return emptyList()
+    val h = w * 9 / 16
+    val out = LinkedHashSet<String>()
+    val cw = Regex("""([/,])w_\d+""")
+    if (cw.containsMatchIn(u)) out += u.replace(cw, "$1w_$w").replace(Regex("""([/,])h_\d+"""), "$1h_$h")
+    val amazon = Regex("""\._[A-Za-z0-9_,\-]+_\.(jpg|jpeg|png|webp)""", RegexOption.IGNORE_CASE)
+    if ("media-amazon.com" in u || "ssl-images-amazon.com" in u) out += u.replace(amazon, ".$1")
+    if ("ytimg.com" in u) out += u.replace(Regex("""/(hq|mq|sd|)default(_live)?\."""), "/maxresdefault.")
+    val qw = Regex("""([?&](?:w|width|imwidth|resize_w))=\d+""")
+    if (qw.containsMatchIn(u)) out += u.replace(qw, "$1=$w").replace(Regex("""([?&](?:h|height|resize_h))=\d+"""), "$1=$h")
+    out -= u
+    return out.toList()
+}
+
 /** Allowed to start an activity from the background because the Home button service is bound. */
 class Updated : BroadcastReceiver() {
     override fun onReceive(c: Context, i: Intent) {
@@ -181,7 +202,7 @@ class MainActivity : Activity() {
     /** [offline]: an HDMI port with no signal right now (see inRow). */
     private class App(val pkg: String, val label: String, val launch: Intent, val icon: Drawable, val offline: Boolean = false, val banner: Drawable? = null)
     /** [art]: the widest, largest picture the app gave, for the full-screen Top Shelf. */
-    private class Prog(val title: String, val sub: String, val progress: Int, val image: String?, val intent: String?, val pkg: String?, val art: String? = image)
+    private class Prog(val title: String, val sub: String, val progress: Int, val image: String?, val intent: String?, val pkg: String?, val art: String? = image, val alt: String? = null)
 
     private val prefs by lazy { getSharedPreferences("home", MODE_PRIVATE) }
     private val io = Executors.newSingleThreadExecutor()
@@ -214,6 +235,8 @@ class MainActivity : Activity() {
     private lateinit var shelf: LinearLayout
     private lateinit var dock: FrameLayout
     private lateinit var lens: FocusLens
+    private lateinit var topGlass: GlassView
+    private lateinit var clock: GlassClock
     private val appsTitle by lazy { findViewById<TextView>(R.id.appsTitle) }
     // Glass layout state: the wallpaper (shown when there's nothing to continue), the Top Shelf position, and the
     // last Left/Right press (dock tiles tilt in from that side).
@@ -275,15 +298,18 @@ class MainActivity : Activity() {
             // Small glass circles; focused, they turn solid white with a dark icon (tvOS).
             val ring = GradientDrawable().apply {
                 shape = GradientDrawable.OVAL
-                setColor(0x26FFFFFF)
-                setStroke(1, 0x1FFFFFFF)
+                setColor(0x00FFFFFF)
             }
             background = ring
             setOnFocusChangeListener { v, focused ->
                 if (focused) lastTop = v
-                ring.setColor(if (focused) 0xFFF5F5F7.toInt() else 0x26FFFFFF)
+                ValueAnimator.ofArgb(if (focused) 0x00FFFFFF else 0xFFF5F5F7.toInt(), if (focused) 0xFFF5F5F7.toInt() else 0x00FFFFFF).apply {
+                    duration = Motion.FOCUS_MS
+                    addUpdateListener { ring.setColor(it.animatedValue as Int) }
+                    start()
+                }
                 setColorFilter(if (focused) 0xFF0A0A0A.toInt() else fg)
-                animate().scaleX(if (focused) 1.18f else 1f).scaleY(if (focused) 1.18f else 1f)
+                animate().scaleX(if (focused) 1.12f else 1f).scaleY(if (focused) 1.12f else 1f)
                     .setDuration(Motion.FOCUS_MS).setInterpolator(Motion.EMPHASIZED).start()
             }
             setOnClickListener { action() }
@@ -1514,7 +1540,7 @@ class MainActivity : Activity() {
         val gap = dp(DOCK_GAP)
         // DOCK_FIT tiles exactly fill the glass panel (content width, plus the dock's 16 dp overhang each side, minus
         // its 24 dp inner padding each side), 16:9 like Android TV app banners.
-        val width = (resources.displayMetrics.widthPixels - dp(96) + dp(32) - dp(48) - gap * (DOCK_FIT - 1)) / DOCK_FIT
+        val width = tileWidth()
         appRow.removeAllViews()
         val hidden = rowHiddenSet()
         val pinned = pinnedInputs()
@@ -2571,7 +2597,7 @@ class MainActivity : Activity() {
                     thumb != null && wide("thumbnail_aspect_ratio") -> thumb
                     else -> poster ?: thumb
                 }
-                val prog = Prog(title, sub, progress, thumb ?: poster, str("intent_uri"), str("package_name"), art)
+                val prog = Prog(title, sub, progress, thumb ?: poster, str("intent_uri"), str("package_name"), art, if (art == poster) thumb else poster)
                 out += watchSortKey(num("watch_next_type"), num("last_engagement_time_utc_millis")) to prog
             }
         }
@@ -2641,17 +2667,29 @@ class MainActivity : Activity() {
         backdrop = findViewById(R.id.backdrop)
         shelf = findViewById(R.id.shelf)
         dock = findViewById(R.id.dock)
-        val scrimView = findViewById<View>(R.id.scrim)
-        val scrim = Glass.scrim()
-        scrimView.background = scrim
-        scrimView.addOnLayoutChangeListener { _, l, t, r, b, _, _, _, _ -> Glass.sizeScrim(scrim, r - l, b - t) }
+        findViewById<View>(R.id.scrim).visibility = View.GONE // no vignette: the picture stays as the glass sees it
+        softShadows()
         // The dock: blurred copy of the backdrop at the back, the apps on top, a lit rim in front.
         val radius = dpf(28f)
         glass = GlassView(this)
         dock.addView(glass, 0, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         Glass.round(dock, radius)
         dock.foreground = Glass.rim(radius, resources.displayMetrics.density)
-        lens = FocusLens(this)
+        // The top buttons sit on a small glass capsule of their own.
+        val cap = findViewById<FrameLayout>(R.id.topGlass)
+        topGlass = GlassView(this)
+        cap.addView(topGlass, 0, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        cap.outlineProvider = object : android.view.ViewOutlineProvider() {
+            override fun getOutline(view: View, o: android.graphics.Outline) = o.setRoundRect(0, 0, view.width, view.height, view.height / 2f)
+        }
+        cap.clipToOutline = true
+        cap.foreground = GradientDrawable().apply {
+            cornerRadius = dpf(40f)
+            setColor(0)
+            setStroke(maxOf(1, dp(1)), 0x38FFFFFF)
+        }
+        clock = findViewById(R.id.clock)
+        lens = FocusLens(this, tileRadius() + dp(LENS_PAD))
         findViewById<FrameLayout>(R.id.lensLayer).addView(lens, 0, FrameLayout.LayoutParams(0, 0))
         // The shelf is one focusable: OK resumes, holding OK opens the hide / open app menu.
         shelf.setOnClickListener { watchList.getOrNull(shelfAt)?.let { open(it) } }
@@ -2659,6 +2697,22 @@ class MainActivity : Activity() {
         shelf.setOnFocusChangeListener { _, focused -> styleShelf(focused) }
         findViewById<ProgressBar>(R.id.shelfProgress).progressDrawable = progressBarDrawable()
         styleShelf(false)
+    }
+
+    /**
+     * iOS-style shadows instead of a vignette: wide, soft and low-opacity under text, so it reads on bright
+     * pictures without a dark band; small lifts under the button, bar and dots.
+     */
+    private fun softShadows() {
+        val big = dpf(14f)
+        val small = dpf(8f)
+        for ((id, r) in listOf(R.id.shelfTitle to big, R.id.date to small, R.id.weather to small,
+            R.id.shelfSource to small, R.id.shelfSub to small)) {
+            findViewById<TextView>(id).setShadowLayer(r, 0f, dpf(1.5f), if (r == big) 0x73000000 else 0x8C000000.toInt())
+        }
+        findViewById<TextView>(R.id.rowLabel).setShadowLayer(small, 0f, dpf(1f), 0x66000000)
+        findViewById<View>(R.id.shelfPlay).elevation = dpf(6f)
+        findViewById<View>(R.id.shelfProgress).elevation = dpf(2f)
     }
 
     /** Resume button: glass while the shelf rests, solid white with dark text once it's focused (tvOS buttons). */
@@ -2745,6 +2799,7 @@ class MainActivity : Activity() {
                     cornerRadius = dpf(3f)
                     setColor(if (on) 0xFFFFFFFF.toInt() else 0x59FFFFFF)
                 }
+                elevation = dpf(2f)
             }, LinearLayout.LayoutParams(dp(if (on) 18 else 6), dp(6)).apply { if (i > 0) marginStart = dp(6) })
         }
     }
@@ -2782,26 +2837,28 @@ class MainActivity : Activity() {
     private fun showBackdrop(big: Bitmap?, small: Bitmap?) {
         backdrop.show(big)
         glass.show(small)
+        topGlass.show(small)
+        clock.source = small
     }
 
     private fun loadHero(p: Prog) {
         val uri = p.art ?: p.image ?: return showBackdrop(wallpaperBmp, wallpaperSmall)
         heroes.get(uri)?.let { return showBackdrop(it.first, it.second) }
-        fetchHero(uri) { pair -> if (watchList.getOrNull(shelfAt)?.let { it.art ?: it.image } == uri) showBackdrop(pair.first, pair.second) }
+        fetchHero(uri, heroCandidates(p)) { pair -> if (watchList.getOrNull(shelfAt)?.let { it.art ?: it.image } == uri) showBackdrop(pair.first, pair.second) }
     }
 
     private fun prefetchHero(p: Prog) {
         val uri = p.art ?: p.image ?: return
-        if (heroes.get(uri) == null) fetchHero(uri) {}
+        if (heroes.get(uri) == null) fetchHero(uri, heroCandidates(p)) {}
     }
 
     /** One download per picture: later askers (the shelf landing on a prefetching item) wait for the same one. */
-    private fun fetchHero(uri: String, then: (Pair<Bitmap, Bitmap>) -> Unit) {
+    private fun fetchHero(uri: String, candidates: List<String>, then: (Pair<Bitmap, Bitmap>) -> Unit) {
         heroWaiters[uri]?.let { it += then; return }
         heroWaiters[uri] = mutableListOf(then)
         posterIo.execute {
             val pair = try {
-                decodeHero(uri)?.let { it to smallCopy(it) }
+                bestHero(candidates)?.let { it to smallCopy(it) }
             } catch (e: Exception) {
                 android.util.Log.w("TvHome", "artwork failed: $uri ($e)")
                 null
@@ -2815,6 +2872,28 @@ class MainActivity : Activity() {
                 waiting.forEach { it(pair) }
             }
         }
+    }
+
+    /**
+     * Pictures to try for an item, sharpest first: each link asked for at screen size (see [hiResArt]), then as the
+     * app gave it, for the app's chosen picture and then its other one.
+     */
+    private fun heroCandidates(p: Prog): List<String> =
+        listOfNotNull(p.art ?: p.image, p.alt).flatMap { hiResArt(it, resources.displayMetrics.widthPixels) + it }.distinct()
+
+    /**
+     * The first candidate at least [HERO_MIN_WIDTH] px wide; failing that, the widest one that loaded. Stops after
+     * [HERO_TRIES] downloads so a slow server can't hold the shelf up.
+     */
+    private fun bestHero(candidates: List<String>): Bitmap? {
+        var best: Bitmap? = null
+        for (u in candidates.take(HERO_TRIES)) {
+            val b = try { decodeHero(u) } catch (e: Exception) { null } ?: continue
+            android.util.Log.i("TvHome", "artwork ${b.width}x${b.height}: $u")
+            if (best == null || b.width > best.width) best = b
+            if (b.width >= HERO_MIN_WIDTH || u.startsWith("content:")) break
+        }
+        return best
     }
 
     /** Full-screen artwork: full colour (posters band in RGB_565 when this large), no bigger than the screen. */
@@ -2854,9 +2933,9 @@ class MainActivity : Activity() {
             img.setImageDrawable(mark)
             img.scaleType = ImageView.ScaleType.FIT_CENTER
             frame.background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(0x40FFFFFF, 0x1AFFFFFF))
-            frame.addView(img, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT).apply { setMargins(dp(28), dp(14), dp(28), dp(14)) })
+            frame.addView(img, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT).apply { setMargins(dp(34), dp(18), dp(34), dp(18)) })
         }
-        focusLift(frame, dpf(12f))
+        focusLift(frame, tileRadius())
         frame.tag = a.pkg
         frame.contentDescription = a.label
         frame.setOnClickListener { launch(a) }
@@ -2916,6 +2995,12 @@ class MainActivity : Activity() {
     }
 
     private fun dpf(v: Float) = v * resources.displayMetrics.density
+
+    /** DOCK_FIT 16:9 tiles exactly fill the glass panel (content width, plus the dock's 16 dp overhang each side, minus its 24 dp padding). */
+    private fun tileWidth() = (resources.displayMetrics.widthPixels - dp(96) + dp(32) - dp(48) - dp(DOCK_GAP) * (DOCK_FIT - 1)) / DOCK_FIT
+
+    /** Apple TV icon roundness: about a quarter of the tile's height, on continuous corners. */
+    private fun tileRadius() = tileWidth() * 9 / 16 * 0.24f
 
     private fun progressBarDrawable(): Drawable {
         fun bar(color: Int) = GradientDrawable().apply { cornerRadius = dp(2).toFloat(); setColor(color) }
@@ -3098,11 +3183,13 @@ class MainActivity : Activity() {
         const val HDMI = "hdmi:" // App.pkg prefix for HDMI device tiles; the rest is the TV input id
         const val ROW_TILES = 8
         const val DOCK_FIT = 6 // dock tiles across the glass panel
-        const val DOCK_GAP = 18 // dp
+        const val DOCK_GAP = 28 // dp; room for the lens between tiles
         const val SHELF_EVERY = 9_000L // Top Shelf turns to the next item this often while it isn't focused
         const val FORK = true
+        const val HERO_MIN_WIDTH = 1280
+        const val HERO_TRIES = 4
         const val FOCUS_SCALE = 1.06f
-        const val LENS_PAD = 8 // dp the glass lens reaches past the focused tile
+        const val LENS_PAD = 13 // dp the glass lens reaches past the focused tile
         const val REST_ALPHA = 0.88f
         const val GRID_GAP = 16 // dp; shared by the apps row and the cards so their columns line up
         /** Shown names for the wallpaper keys saved in prefs (the keys stay English). */

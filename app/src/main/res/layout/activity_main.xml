@@ -45,12 +45,20 @@
             android:layout_gravity="top"
             android:orientation="horizontal">
 
-            <LinearLayout
-                android:layout_width="0dp"
+            <!-- Glass capsule for the buttons (blur added in code); padding is room for the focused one to grow. -->
+            <FrameLayout
+                android:id="@+id/topGlass"
+                android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_weight="1"
+                android:layout_marginTop="4dp">
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:clipChildren="false"
+                android:clipToPadding="false"
                 android:orientation="horizontal"
-                android:paddingTop="6dp">
+                android:padding="6dp">
 
                 <ImageView
                     android:id="@+id/wifi"
@@ -91,6 +99,12 @@
                     android:padding="9dp"
                     android:src="@drawable/ic_tune" />
             </LinearLayout>
+            </FrameLayout>
+
+            <View
+                android:layout_width="0dp"
+                android:layout_height="1dp"
+                android:layout_weight="1" />
 
             <LinearLayout
                 android:layout_width="wrap_content"
@@ -98,18 +112,16 @@
                 android:gravity="end"
                 android:orientation="vertical">
 
-                <TextClock
+                <dev.plume.GlassClock
                     android:id="@+id/clock"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:fontFamily="sans-serif-light"
+                    android:fontFamily="sans-serif-medium"
                     android:format12Hour="h:mm"
                     android:format24Hour="HH:mm"
                     android:includeFontPadding="false"
-                    android:letterSpacing="-0.02"
-                    android:shadowColor="#66000000"
-                    android:shadowRadius="12"
-                    android:textSize="64sp" />
+                    android:letterSpacing="-0.03"
+                    android:textSize="72sp" />
 
                 <TextClock
                     android:id="@+id/date"
@@ -146,7 +158,7 @@
             android:layout_width="460dp"
             android:layout_height="wrap_content"
             android:layout_gravity="bottom|start"
-            android:layout_marginBottom="150dp"
+            android:layout_marginBottom="172dp"
             android:clipChildren="false"
             android:clipToPadding="false"
             android:focusable="true"
@@ -254,9 +266,9 @@
                 android:layout_height="wrap_content"
                 android:clipToPadding="false"
                 android:paddingStart="24dp"
-                android:paddingTop="22dp"
+                android:paddingTop="28dp"
                 android:paddingEnd="24dp"
-                android:paddingBottom="6dp"
+                android:paddingBottom="8dp"
                 android:scrollbars="none">
 
                 <!-- The focus lens (added in code) sits behind the rows, so it scrolls with them. -->
@@ -285,7 +297,7 @@
                         android:id="@+id/rowLabel"
                         android:layout_width="200dp"
                         android:layout_height="22dp"
-                        android:layout_marginTop="8dp"
+                        android:layout_marginTop="18dp"
                         android:alpha="0"
                         android:fontFamily="sans-serif-medium"
                         android:gravity="center"
@@ -297,7 +309,7 @@
                         android:id="@+id/nameRow"
                         android:layout_width="wrap_content"
                         android:layout_height="22dp"
-                        android:layout_marginTop="8dp"
+                        android:layout_marginTop="18dp"
                         android:orientation="horizontal"
                         android:visibility="gone" />
                 </LinearLayout>
