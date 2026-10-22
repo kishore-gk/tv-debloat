@@ -366,6 +366,7 @@ class MainActivity : Activity() {
         refreshWatchNext()
         scheduleShelfTick()
         refreshNews()
+        armIdle()
         showWeather()
         ui.removeCallbacks(weatherTick)
         ui.post(weatherTick)
@@ -407,6 +408,7 @@ class MainActivity : Activity() {
         ui.removeCallbacks(themeTick)
         ui.removeCallbacks(wallpaperTick)
         ui.removeCallbacks(shelfTick)
+        ui.removeCallbacks(idleNews)
         if (editing) endEdit()
         super.onPause()
     }
@@ -1085,6 +1087,11 @@ class MainActivity : Activity() {
                 alignRow()
                 renderSettings(R.string.row_position)
             },
+            R.string.news_idle to { d ->
+                prefs.edit().putLong("news_idle", IDLE_CHOICES.step(idleMs(), d)).apply()
+                armIdle()
+                renderSettings(R.string.news_idle)
+            },
             R.string.app_names to { d ->
                 prefs.edit().putString("names", listOf("focus", "always", "never").step(names, d)).apply()
                 renderApps()
@@ -1154,6 +1161,7 @@ class MainActivity : Activity() {
             R.string.news_topics to Triple(getString(R.string.news_topics),
                 News.topicsOn(prefs).joinToString(", ") { News.sectionName(it, prefs) }) { pickTopics() },
             R.string.news_local to Triple(getString(R.string.news_local), News.city(prefs) ?: getString(R.string.news_follows_weather)) { pickCity() },
+            R.string.news_idle to Triple(getString(R.string.news_idle), idleName(idleMs())) { steps[R.string.news_idle]!!(1) },
             R.string.news_morning to Triple(getString(R.string.news_morning), toggle(prefs.getBoolean("news_morning", true))) {
                 prefs.edit().putBoolean("news_morning", !prefs.getBoolean("news_morning", true)).apply()
                 watchKey = null
@@ -1197,7 +1205,7 @@ class MainActivity : Activity() {
             Triple(R.string.section_weather, if (weather == "off") on(false) else "${rows[R.string.weather_units]!!.second} · ${rows[R.string.weather_location]!!.second}",
                 listOf(R.string.weather, R.string.weather_units, R.string.weather_location)),
             Triple(R.string.section_news, News.edition(prefs).name,
-                listOf(R.string.news_open, R.string.news_region, R.string.news_topics, R.string.news_local, R.string.news_morning, R.string.news_screensaver)),
+                listOf(R.string.news_open, R.string.news_idle, R.string.news_region, R.string.news_topics, R.string.news_local, R.string.news_morning, R.string.news_screensaver)),
             Triple(R.string.section_screensaver, rows[R.string.screensaver]!!.second, listOf(R.string.screensaver, R.string.test_screensaver, R.string.screensaver_timing)),
             Triple(R.string.section_home, on(homeServiceOn() || isDefaultHome()), listOf(R.string.setup_home, R.string.home_button, R.string.default_launcher)),
         )
@@ -1633,6 +1641,7 @@ class MainActivity : Activity() {
     override fun dispatchKeyEvent(e: KeyEvent): Boolean {
         if (e.action == KeyEvent.ACTION_DOWN) {
             backdrop.hold() // the slow zoom waits while the remote is in use
+            armIdle() // and the idle timer starts over
             lastKeyAt = SystemClock.uptimeMillis()
             lastDir = when (e.keyCode) {
                 KeyEvent.KEYCODE_DPAD_LEFT -> -1
@@ -3053,6 +3062,29 @@ class MainActivity : Activity() {
         }.start()
     }
 
+    /** How long the home screen waits, untouched, before opening the news; 0 is off. Default 30 seconds. */
+    private fun idleMs() = prefs.getLong("news_idle", 30_000L).takeIf { it in IDLE_CHOICES } ?: 30_000L
+
+    private fun idleName(ms: Long) = if (ms == 0L) getString(R.string.off)
+        else getString(R.string.news_idle_after, if (ms < 60_000L) "${ms / 1000} s" else "${ms / 60_000} min")
+
+    /** (Re)starts the idle timer; every remote press calls this, so only real inactivity opens the news. */
+    private fun armIdle() {
+        ui.removeCallbacks(idleNews)
+        if (idleMs() > 0L) ui.postDelayed(idleNews, idleMs())
+    }
+
+    /**
+     * Opens the news after the home screen sat untouched. Not while something on it is in use (settings, All apps,
+     * rearranging the dock, a setup popup): then it waits another round.
+     */
+    private val idleNews = Runnable {
+        val busy = settingsScrim.visibility == View.VISIBLE || allApps.visibility == View.VISIBLE || editing ||
+            setupDialog?.isShowing == true || !hasWindowFocus()
+        if (busy || News.load(this).isEmpty()) armIdle()
+        else startActivity(Intent(this, NewsActivity::class.java))
+    }
+
     private fun briefingHours() = Calendar.getInstance().get(Calendar.HOUR_OF_DAY) in BRIEFING_HOURS
 
     /**
@@ -3416,6 +3448,7 @@ class MainActivity : Activity() {
         const val SHELF_EVERY = 9_000L // Top Shelf turns to the next item this often while it isn't focused
         const val FORK = true
         const val NEWS_INTENT = "plume:news" // the morning briefing's card on the shelf
+        val IDLE_CHOICES = listOf(30_000L, 60_000L, 120_000L, 300_000L, 0L)
         val BRIEFING_HOURS = 5..10
         const val ALL_APPS_COLUMNS = 6
         const val DRAWER_PAD = 36 // dp inside the All apps sheet

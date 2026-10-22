@@ -90,6 +90,8 @@
     <string name="news_move_left">Move left</string>
     <string name="news_move_right">Move right</string>
     <string name="news_hide">Hide</string>
+    <string name="news_idle">Open news when idle</string>
+    <string name="news_idle_after">After %1$s</string>
     <string name="downloading_gallery">Downloading Gallery…</string>
     <string name="gallery">Gallery</string>
     <string name="test_screensaver">Test screensaver</string>
