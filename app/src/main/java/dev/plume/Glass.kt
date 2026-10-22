@@ -33,6 +33,16 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 
 /**
+ * Benchmark switches, set from adb (`am start -n dev.plume/.MainActivity --es plume_dbg nokb,noink`), so one
+ * feature at a time can be measured: nokb (no slow zoom on the artwork), noink (plain text, no glass text),
+ * noglass (flat panels, no picture in the glass).
+ */
+internal object Debug {
+    @Volatile var flags: Set<String> = emptySet()
+    fun off(f: String) = f in flags
+}
+
+/**
  * Every animation moves on one S-curve: a gentle start, the travel in the middle, a gentle landing (a cubic
  * ease-in-out). EMPHASIZED and STANDARD are kept as names for where they're used; both are the S-curve.
  */
@@ -81,7 +91,7 @@ class Backdrop(context: Context, attrs: AttributeSet?) : FrameLayout(context, at
         next.animate().alpha(1f).setDuration(fadeMs).setInterpolator(Motion.STANDARD)
             .withEndAction { if (current === bmp) prev.setImageDrawable(null) } // keep only one picture in memory
             .start()
-        if (bmp != null) {
+        if (bmp != null && !Debug.off("nokb")) {
             drift[i] = ObjectAnimator.ofPropertyValuesHolder(next,
                 PropertyValuesHolder.ofFloat(View.SCALE_X, 1f, Motion.KEN_BURNS_SCALE),
                 PropertyValuesHolder.ofFloat(View.SCALE_Y, 1f, Motion.KEN_BURNS_SCALE),
@@ -128,6 +138,8 @@ class GlassView(context: Context) : View(context) {
         set(v) { field = v; shapeDirty = true; invalidate() }
 
     private val shape = Path()
+    private val shaders = arrayOfNulls<android.graphics.BitmapShader>(2)
+    private val shaderOf = arrayOfNulls<Bitmap>(2)
     private var shapeDirty = true
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val pics = arrayOf(
@@ -175,6 +187,9 @@ class GlassView(context: Context) : View(context) {
     }
 
     private val bright = Ease(this)
+    private var lum = 0f
+    private var lumOf: Bitmap? = null
+    private val lumAt = IntArray(2)
 
     /** Extra smoke laid on bright pictures, so white logos and icons on the glass still read (iOS adapts the same way). */
     var adapt = true
@@ -183,6 +198,11 @@ class GlassView(context: Context) : View(context) {
         val sh = shape()
         fill.color = base
         c.drawPath(sh, fill)
+        if (Debug.off("noglass")) {
+            fill.color = 0xB31C1C1E.toInt()
+            c.drawPath(sh, fill)
+            return
+        }
         val root = rootView
         getLocationInWindow(at)
         root.getLocationInWindow(rootAt)
@@ -192,7 +212,13 @@ class GlassView(context: Context) : View(context) {
         c.drawPath(sh, fill)
         val b = to
         if (adapt && b != null) {
-            val t = bright.to(brightness(backdropLuminance(b, this, at, rootAt)))
+            // Brightness only re-sampled when the picture or this panel's place on screen changes.
+            if (b !== lumOf || at[0] != lumAt[0] || at[1] != lumAt[1]) {
+                lum = backdropLuminance(b, this, at, rootAt)
+                lumOf = b
+                lumAt[0] = at[0]; lumAt[1] = at[1]
+            }
+            val t = bright.to(brightness(lum))
             if (t > 0f) {
                 fill.color = Color.argb((t * 0x59).toInt(), 0x1C, 0x1C, 0x1E)
                 c.drawPath(sh, fill)
@@ -211,7 +237,11 @@ class GlassView(context: Context) : View(context) {
         val s = maxOf(w.toFloat() / b.width, h.toFloat() / b.height) / z
         m.setScale(s, s)
         m.postTranslate(((w - b.width * s * z) / 2f - (at[0] - rootAt[0])) / z, ((h - b.height * s * z) / 2f - (at[1] - rootAt[1])) / z)
-        pic.shader = android.graphics.BitmapShader(b, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP).apply { setLocalMatrix(m) }
+        // One shader per picture, reused; only its placement changes from frame to frame.
+        val i = if (pic === pics[0]) 0 else 1
+        val shader = shaders[i]?.takeIf { shaderOf[i] === b }
+            ?: android.graphics.BitmapShader(b, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP).also { shaders[i] = it; shaderOf[i] = b; pic.shader = it }
+        shader.setLocalMatrix(m)
         pic.alpha = (alpha * 255).toInt()
         c.drawPath(sh, pic)
     }
@@ -512,6 +542,7 @@ class GlassInk(private val view: android.widget.TextView) {
     private val bright = Ease(view)
 
     fun draw(c: Canvas, text: (Canvas) -> Unit) {
+        if (Debug.off("noink")) return text(c)
         val v = view
         val p = v.paint
         val w = v.width.toFloat()

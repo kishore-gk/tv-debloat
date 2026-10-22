@@ -290,6 +290,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
+        readDebug(intent)
         setContentView(R.layout.activity_main)
         appRow = findViewById(R.id.appRow)
         allApps = findViewById(R.id.allApps)
@@ -704,6 +705,7 @@ class MainActivity : Activity() {
     /** Home pressed while already home: close whatever is open and go back to the start of the apps row. */
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        if (readDebug(intent)) return recreate()
         if (intent.action == UPDATE_STATUS) return installStatus(intent)
         if (homeTest != 0 && intent.hasCategory(Intent.CATEGORY_HOME)) { // the Home press reached us: setup works
             homeTest = 0
@@ -3046,6 +3048,15 @@ class MainActivity : Activity() {
     }
 
     private fun dpf(v: Float) = v * resources.displayMetrics.density
+
+    /** Benchmark switches from adb (see Debug); true when they changed, so the screen is rebuilt with them. */
+    private fun readDebug(i: Intent?): Boolean {
+        val raw = i?.getStringExtra("plume_dbg") ?: return false
+        val flags = raw.split(',').map { it.trim() }.filter { it.isNotEmpty() && it != "none" }.toSet()
+        if (flags == Debug.flags) return false
+        Debug.flags = flags
+        return true
+    }
 
     private fun navSound(key: Int) = window.decorView.playSoundEffect(when (key) {
         KeyEvent.KEYCODE_DPAD_LEFT -> SoundEffectConstants.NAVIGATION_LEFT
