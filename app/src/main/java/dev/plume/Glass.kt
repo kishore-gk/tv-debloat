@@ -274,11 +274,7 @@ class FocusLens(context: Context, private val radius: Float) : View(context) {
     init {
         importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
         alpha = 0f
-        // Soft shadow under the glass plate, like iOS controls floating over content.
-        outlineProvider = object : ViewOutlineProvider() {
-            override fun getOutline(view: View, o: Outline) = o.setRoundRect(0, 0, view.width, view.height, radius)
-        }
-        elevation = 6f * d
+        // No elevation: a shadow under translucent glass shows through it as a dark box.
     }
 
     override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) {
@@ -412,6 +408,10 @@ class GlassClock(context: Context, attrs: AttributeSet?) : android.widget.TextCl
     var source: Bitmap? = null
         set(v) { field = v; invalidate() }
 
+    /** How white the frost is, 0..1: small text (the date) needs more to stay readable than the big time. */
+    var frostiness = 0.5f
+        set(v) { field = v; invalidate() }
+
     private val pic = Paint(Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG).apply {
         xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.SRC_IN)
         colorFilter = ColorMatrixColorFilter(ColorMatrix().apply { setSaturation(1.6f) })
@@ -422,7 +422,7 @@ class GlassClock(context: Context, attrs: AttributeSet?) : android.widget.TextCl
     private val m = Matrix()
     private val at = IntArray(2)
     private val rootAt = IntArray(2)
-    private val edge = 1.4f * resources.displayMetrics.density
+    var edge = 1.4f * resources.displayMetrics.density
 
     override fun onDraw(c: Canvas) {
         val p = paint
@@ -440,8 +440,10 @@ class GlassClock(context: Context, attrs: AttributeSet?) : android.widget.TextCl
             m.postTranslate((root.width - b.width * s) / 2f - (at[0] - rootAt[0]) + scrollX, (root.height - b.height * s) / 2f - (at[1] - rootAt[1]) + scrollY)
             c.drawBitmap(b, m, pic)
         }
-        frost.shader = LinearGradient(0f, 0f, 0f, height.toFloat(), if (b == null) 0xF2FFFFFF.toInt() else 0x8CFFFFFF.toInt(),
-            if (b == null) 0xD9FFFFFF.toInt() else 0x59FFFFFF, Shader.TileMode.CLAMP)
+        val top = if (b == null) 0.95f else 0.3f + frostiness * 0.5f
+        val bottom = if (b == null) 0.85f else 0.15f + frostiness * 0.5f
+        frost.shader = LinearGradient(0f, 0f, 0f, height.toFloat(), Color.argb((top * 255).toInt(), 255, 255, 255),
+            Color.argb((bottom * 255).toInt(), 255, 255, 255), Shader.TileMode.CLAMP)
         c.drawPaint(frost)
         c.restoreToCount(layer)
         // 2. The lit edge: a thin stroke, bright at the top of each glyph and fading towards the bottom.

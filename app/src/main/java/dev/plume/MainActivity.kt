@@ -59,6 +59,7 @@ import android.text.style.BulletSpan
 import android.util.LruCache
 import android.view.Gravity
 import android.view.KeyEvent
+import android.view.SoundEffectConstants
 import android.view.View
 import android.view.ViewGroup
 import android.view.Window
@@ -183,6 +184,8 @@ internal fun hiResArt(u: String, w: Int): List<String> {
     if (cw.containsMatchIn(u)) out += u.replace(cw, "$1w_$w").replace(Regex("""([/,])h_\d+"""), "$1h_$h")
     val amazon = Regex("""\._[A-Za-z0-9_,\-]+_\.(jpg|jpeg|png|webp)""", RegexOption.IGNORE_CASE)
     if ("media-amazon.com" in u || "ssl-images-amazon.com" in u) out += u.replace(amazon, ".$1")
+    val cr = Regex("""/imgsrv/display/thumbnail/\d+x\d+/""")
+    if (cr.containsMatchIn(u)) out += u.replace(cr, "/imgsrv/display/thumbnail/${w}x$h/")
     if ("ytimg.com" in u) out += u.replace(Regex("""/(hq|mq|sd|)default(_live)?\."""), "/maxresdefault.")
     val qw = Regex("""([?&](?:w|width|imwidth|resize_w))=\d+""")
     if (qw.containsMatchIn(u)) out += u.replace(qw, "$1=$w").replace(Regex("""([?&](?:h|height|resize_h))=\d+"""), "$1=$h")
@@ -237,6 +240,10 @@ class MainActivity : Activity() {
     private lateinit var lens: FocusLens
     private lateinit var topGlass: GlassView
     private lateinit var clock: GlassClock
+    private lateinit var date: GlassClock
+    private lateinit var sheetGlass: GlassView
+    private var dockOpen = -1f // 0 compact, 1 open (lens and name room); -1 not laid out yet
+    private var dockAnim: ValueAnimator? = null
     private val appsTitle by lazy { findViewById<TextView>(R.id.appsTitle) }
     // Glass layout state: the wallpaper (shown when there's nothing to continue), the Top Shelf position, and the
     // last Left/Right press (dock tiles tilt in from that side).
@@ -247,7 +254,7 @@ class MainActivity : Activity() {
     private var lastDir = 0
     private var lastKeyAt = 0L
     /** Full-screen artwork with its small copy for the glass, by URI. ~8 MB a picture at 1080p. */
-    private val heroes = object : LruCache<String, Pair<Bitmap, Bitmap>>(28 * 1024 * 1024) {
+    private val heroes = object : LruCache<String, Pair<Bitmap, Bitmap>>(44 * 1024 * 1024) {
         override fun sizeOf(key: String, value: Pair<Bitmap, Bitmap>) = value.first.byteCount + value.second.byteCount
     }
     private val heroWaiters = HashMap<String, MutableList<(Pair<Bitmap, Bitmap>) -> Unit>>() // UI thread only
@@ -1033,11 +1040,7 @@ class MainActivity : Activity() {
     private fun showPanel() {
         panelFrom = currentFocus
         // Dark: true black, set apart from the home screen by a hairline on its left edge.
-        findViewById<View>(R.id.settingsPanel).background = if (!dark) ColorDrawable(0xFFF7F8FA.toInt())
-            else LayerDrawable(arrayOf(ColorDrawable(DARK_BG), ColorDrawable(PANEL_EDGE))).apply {
-                setLayerGravity(1, Gravity.START or Gravity.FILL_VERTICAL)
-                setLayerWidth(1, 1)
-            }
+        findViewById<View>(R.id.settingsPanel).background = null // the glass sheet behind it (setupSheet) is its background
         findViewById<TextView>(R.id.settingsTitle).setTextColor(fg)
         settingsScrim.visibility = View.VISIBLE
         homeFocusable(false)
@@ -1378,7 +1381,7 @@ class MainActivity : Activity() {
             setOnClickListener { action() }
             setOnFocusChangeListener { _, focused ->
                 // Focus: a lit rimCard in dark (and the title brightens), a white pill in light.
-                if (dark) background = if (focused) rimCard(dp(8), true) else bg
+                if (dark) background = if (focused) glassRow() else bg
                 else bg.colors = if (focused) intArrayOf(Color.WHITE, Color.WHITE) else intArrayOf(0, 0)
                 // The title glides to bright rather than snapping, so moving through the list feels smooth.
                 if (dark) ValueAnimator.ofArgb(name.currentTextColor, if (focused) DARK_TEXT else DARK_TEXT_2).apply {
@@ -1793,7 +1796,12 @@ class MainActivity : Activity() {
         }
         if (editing && editKey(e, confirm)) return true
         if (e.action == KeyEvent.ACTION_DOWN && settingsScrim.visibility != View.VISIBLE && allApps.visibility != View.VISIBLE) {
-            currentFocus?.let { homeNav(it, e.keyCode) }?.let { it.requestFocus(); return true }
+            currentFocus?.let { from -> homeNav(from, e.keyCode)?.let { to ->
+                // Android only plays the navigation click for focus moves it makes; these are ours.
+                if (to !== from || from === shelf && e.keyCode in SHELF_KEYS) navSound(e.keyCode)
+                to.requestFocus()
+                return true
+            } }
         }
         return super.dispatchKeyEvent(e)
     }
@@ -2689,6 +2697,12 @@ class MainActivity : Activity() {
             setStroke(maxOf(1, dp(1)), 0x38FFFFFF)
         }
         clock = findViewById(R.id.clock)
+        date = findViewById<GlassClock>(R.id.date).apply {
+            frostiness = 0.9f
+            edge = 0.8f * resources.displayMetrics.density
+        }
+        setupSheet()
+        dockSize(0f)
         lens = FocusLens(this, tileRadius() + dp(LENS_PAD))
         findViewById<FrameLayout>(R.id.lensLayer).addView(lens, 0, FrameLayout.LayoutParams(0, 0))
         // The shelf is one focusable: OK resumes, holding OK opens the hide / open app menu.
@@ -2706,7 +2720,7 @@ class MainActivity : Activity() {
     private fun softShadows() {
         val big = dpf(14f)
         val small = dpf(8f)
-        for ((id, r) in listOf(R.id.shelfTitle to big, R.id.date to small, R.id.weather to small,
+        for ((id, r) in listOf(R.id.shelfTitle to big, R.id.weather to small,
             R.id.shelfSource to small, R.id.shelfSub to small)) {
             findViewById<TextView>(id).setShadowLayer(r, 0f, dpf(1.5f), if (r == big) 0x73000000 else 0x8C000000.toInt())
         }
@@ -2838,7 +2852,9 @@ class MainActivity : Activity() {
         backdrop.show(big)
         glass.show(small)
         topGlass.show(small)
+        sheetGlass.show(small)
         clock.source = small
+        date.source = small
     }
 
     private fun loadHero(p: Prog) {
@@ -2904,7 +2920,10 @@ class MainActivity : Activity() {
         val target = resources.displayMetrics.widthPixels
         var sample = 1
         while (bounds.outWidth / (sample * 2) >= target) sample *= 2
-        return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })
+        val b = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample }) ?: return null
+        // Never keep more than the screen needs: a 2862 px poster is 18 MB in memory, at 1920 px it's 8 MB.
+        if (b.width <= target) return b
+        return Bitmap.createScaledBitmap(b, target, maxOf(1, b.height * target / b.width), true).also { if (it !== b) b.recycle() }
     }
 
     /** The glass only ever shows a heavy blur of the picture, so a tiny copy looks the same and costs ~200 KB. */
@@ -2973,7 +2992,6 @@ class MainActivity : Activity() {
             }
             v.animate()
                 .scaleX(if (focused) FOCUS_SCALE else 1f).scaleY(if (focused) FOCUS_SCALE else 1f)
-                .translationZ(if (focused) dpf(10f) else 0f)
                 .rotationY(0f)
                 .alpha(if (focused) 1f else REST_ALPHA)
                 .setDuration(Motion.FOCUS_MS + 60).setInterpolator(Motion.EMPHASIZED).start()
@@ -2983,9 +3001,10 @@ class MainActivity : Activity() {
     /** The glass lens follows focus along the dock and fades away when focus leaves it. */
     private fun moveLens(v: View, focused: Boolean) {
         if (!focused) {
-            ui.post { if (currentFocus?.parent !== appRow) lens.hide() }
+            ui.post { if (currentFocus?.parent !== appRow) { lens.hide(); openDock(false) } }
             return
         }
+        openDock(true)
         if (editing) return lens.hide()
         val place = {
             val row = appRow.parent as View
@@ -2995,6 +3014,69 @@ class MainActivity : Activity() {
     }
 
     private fun dpf(v: Float) = v * resources.displayMetrics.density
+
+    private fun navSound(key: Int) = window.decorView.playSoundEffect(when (key) {
+        KeyEvent.KEYCODE_DPAD_LEFT -> SoundEffectConstants.NAVIGATION_LEFT
+        KeyEvent.KEYCODE_DPAD_RIGHT -> SoundEffectConstants.NAVIGATION_RIGHT
+        KeyEvent.KEYCODE_DPAD_UP -> SoundEffectConstants.NAVIGATION_UP
+        else -> SoundEffectConstants.NAVIGATION_DOWN
+    })
+
+    /**
+     * The dock rests compact, the same glass above and below the tiles. With focus in it, it grows upwards to make
+     * room for the lens around the focused tile and the app's name under it, and shrinks back when focus leaves.
+     */
+    private fun openDock(open: Boolean) {
+        val to = if (open) 1f else 0f
+        if (dockOpen == to) return
+        dockAnim?.cancel()
+        dockAnim = ValueAnimator.ofFloat(dockOpen.coerceAtLeast(0f), to).apply {
+            duration = 340
+            interpolator = Motion.EMPHASIZED
+            addUpdateListener { dockSize(it.animatedValue as Float) }
+            start()
+        }
+        dockOpen = to
+    }
+
+    private fun dockSize(f: Float) {
+        if (dockAnim?.isRunning != true) dockOpen = f
+        fun lerp(a: Int, b: Int) = dp(a) + ((dp(b) - dp(a)) * f).toInt()
+        findViewById<View>(R.id.appScroll).setPadding(dp(24), lerp(DOCK_REST_PAD, 28), dp(24), lerp(DOCK_REST_PAD, 8))
+        for (id in intArrayOf(R.id.rowLabel, R.id.nameRow)) {
+            val v = findViewById<View>(id)
+            (v.layoutParams as LinearLayout.LayoutParams).apply {
+                height = lerp(0, 22)
+                topMargin = lerp(0, 18)
+            }
+            v.requestLayout()
+        }
+    }
+
+    /** Settings as a floating frosted sheet on the right, like an iOS sidebar, with the dock's glass and rim. */
+    private fun setupSheet() {
+        val scrim = settingsScrim as FrameLayout
+        val panel = findViewById<View>(R.id.settingsPanel)
+        scrim.setBackgroundColor(0x40000000)
+        scrim.removeView(panel)
+        val sheet = FrameLayout(this)
+        sheetGlass = GlassView(this).apply { tint = 0x73141418 }
+        sheet.addView(sheetGlass, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        sheet.addView(panel, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        val radius = dpf(28f)
+        Glass.round(sheet, radius)
+        sheet.foreground = Glass.rim(radius, resources.displayMetrics.density)
+        scrim.addView(sheet, FrameLayout.LayoutParams(dp(380), MATCH_PARENT, Gravity.END).apply {
+            setMargins(0, dp(20), dp(20), dp(20))
+        })
+    }
+
+    /** A focused settings row on the glass sheet: brighter glass with a hairline rim, not a dark card. */
+    private fun glassRow(): Drawable = GradientDrawable().apply {
+        cornerRadius = dpf(12f)
+        setColor(0x33FFFFFF)
+        setStroke(1, 0x40FFFFFF)
+    }
 
     /** DOCK_FIT 16:9 tiles exactly fill the glass panel (content width, plus the dock's 16 dp overhang each side, minus its 24 dp padding). */
     private fun tileWidth() = (resources.displayMetrics.widthPixels - dp(96) + dp(32) - dp(48) - dp(DOCK_GAP) * (DOCK_FIT - 1)) / DOCK_FIT
@@ -3186,6 +3268,8 @@ class MainActivity : Activity() {
         const val DOCK_GAP = 28 // dp; room for the lens between tiles
         const val SHELF_EVERY = 9_000L // Top Shelf turns to the next item this often while it isn't focused
         const val FORK = true
+        const val DOCK_REST_PAD = 14 // dp of glass above and below the tiles while the dock rests
+        val SHELF_KEYS = setOf(KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT)
         const val HERO_MIN_WIDTH = 1280
         const val HERO_TRIES = 4
         const val FOCUS_SCALE = 1.06f
