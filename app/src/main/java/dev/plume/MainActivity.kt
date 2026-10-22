@@ -1641,6 +1641,9 @@ class MainActivity : Activity() {
             return true
         }
         if (editing && editKey(e, confirm)) return true
+        if (e.action == KeyEvent.ACTION_DOWN && allApps.visibility == View.VISIBLE && settingsScrim.visibility != View.VISIBLE) {
+            drawerNav(e.keyCode)?.let { return it }
+        }
         if (e.action == KeyEvent.ACTION_DOWN && settingsScrim.visibility != View.VISIBLE && allApps.visibility != View.VISIBLE) {
             currentFocus?.let { from -> homeNav(from, e.keyCode)?.let { to ->
                 // Android only plays the navigation click for focus moves it makes; these are ours.
@@ -1681,8 +1684,9 @@ class MainActivity : Activity() {
             v.parent === appRow -> when (key) {
                 KeyEvent.KEYCODE_DPAD_UP -> onShelf ?: top
                 KeyEvent.KEYCODE_DPAD_DOWN -> v
-                KeyEvent.KEYCODE_DPAD_LEFT -> if (appRow.indexOfChild(v) == 0) v else null
-                KeyEvent.KEYCODE_DPAD_RIGHT -> if (appRow.indexOfChild(v) == appRow.childCount - 1) v else null
+                // Moved here, not left to the scroller: it moves focus without the navigation click.
+                KeyEvent.KEYCODE_DPAD_LEFT -> appRow.getChildAt(appRow.indexOfChild(v) - 1) ?: v
+                KeyEvent.KEYCODE_DPAD_RIGHT -> appRow.getChildAt(appRow.indexOfChild(v) + 1) ?: v
                 else -> null
             }
             else -> null
@@ -2760,34 +2764,43 @@ class MainActivity : Activity() {
     }
 
     /**
-     * Colours each line of text over the artwork from the picture right behind it (see tintFor): a pale tint of the
-     * picture's colour on dark artwork, a deep shade on bright artwork, always at least 4.5:1 contrast. Eases to
-     * the new colour on the S-curve when the artwork changes. A soft shadow (light text) or glow (dark text)
-     * keeps edges clean on busy pictures.
+     * Colours the text over the artwork from the picture behind it (see tintFor): a pale tint of the picture's
+     * colour on dark artwork, a deep shade on bright artwork, always at least 4.5:1 contrast. Text that belongs
+     * together shares one colour, taken from the picture behind all of it: the clock, date and weather; and the
+     * app name, title and time left of the shelf. Eases to a new colour on the S-curve when the artwork changes; a
+     * soft shadow (light text) or glow (dark text) keeps edges clean on busy pictures.
      */
     private fun tintTexts() {
         val small = tintSource
         val at = IntArray(2)
         val rootAt = IntArray(2)
-        for ((id, alpha) in TINTED) {
-            val v = findViewById<TextView>(id) ?: continue
-            if (v.visibility != View.VISIBLE || v.width == 0) continue
+        for (group in TINTED) {
+            val views = group.mapNotNull { findViewById<TextView>(it) }.filter { it.visibility == View.VISIBLE && it.width > 0 }
+            if (views.isEmpty()) continue
             val bg = if (small == null) Color.BLACK else {
-                v.getLocationInWindow(at)
-                v.rootView.getLocationInWindow(rootAt)
-                backdropColor(small, v, at, rootAt)
+                // The group's background: each line's average, weighted by its size.
+                var r = 0.0; var g = 0.0; var b = 0.0; var total = 0.0
+                for (v in views) {
+                    v.getLocationInWindow(at)
+                    v.rootView.getLocationInWindow(rootAt)
+                    val c = backdropColor(small, v, at, rootAt)
+                    val area = v.width.toDouble() * v.height
+                    r += Color.red(c) * area; g += Color.green(c) * area; b += Color.blue(c) * area; total += area
+                }
+                Color.rgb((r / total).toInt(), (g / total).toInt(), (b / total).toInt())
             }
             val ink = tintFor(bg)
-            val target = Color.argb((alpha * 255).toInt(), Color.red(ink), Color.green(ink), Color.blue(ink))
             val light = relativeLuminance(ink) > 0.5
-            v.setShadowLayer(dpf(8f), 0f, dpf(1f), if (light) 0x59000000 else 0x40FFFFFF)
-            tintAnims[v]?.cancel()
-            if (v.currentTextColor == target) continue
-            tintAnims[v] = ValueAnimator.ofArgb(v.currentTextColor, target).apply {
-                duration = 600
-                interpolator = Motion.S
-                addUpdateListener { v.setTextColor(it.animatedValue as Int) }
-                start()
+            for (v in views) {
+                v.setShadowLayer(dpf(8f), 0f, dpf(1f), if (light) 0x59000000 else 0x40FFFFFF)
+                tintAnims[v]?.cancel()
+                if (v.currentTextColor == ink) continue
+                tintAnims[v] = ValueAnimator.ofArgb(v.currentTextColor, ink).apply {
+                    duration = 600
+                    interpolator = Motion.S
+                    addUpdateListener { v.setTextColor(it.animatedValue as Int) }
+                    start()
+                }
             }
         }
     }
@@ -2950,6 +2963,25 @@ class MainActivity : Activity() {
     }
 
     private fun dpf(v: Float) = v * resources.displayMetrics.density
+
+    /**
+     * Arrow keys in All apps: the list scrolls by moving focus itself, which Android does without the navigation
+     * click, so focus is moved here instead (the list still scrolls to it). True when handled; null for other keys.
+     */
+    private fun drawerNav(key: Int): Boolean? {
+        val dir = when (key) {
+            KeyEvent.KEYCODE_DPAD_UP -> View.FOCUS_UP
+            KeyEvent.KEYCODE_DPAD_DOWN -> View.FOCUS_DOWN
+            KeyEvent.KEYCODE_DPAD_LEFT -> View.FOCUS_LEFT
+            KeyEvent.KEYCODE_DPAD_RIGHT -> View.FOCUS_RIGHT
+            else -> return null
+        }
+        val from = currentFocus ?: return null
+        val next = android.view.FocusFinder.getInstance().findNextFocus(allAppsGrid, from, dir) ?: return true // edge: stay
+        navSound(key)
+        next.requestFocus()
+        return true
+    }
 
     private fun navSound(key: Int) = window.decorView.playSoundEffect(when (key) {
         KeyEvent.KEYCODE_DPAD_LEFT -> SoundEffectConstants.NAVIGATION_LEFT
@@ -3233,9 +3265,11 @@ class MainActivity : Activity() {
         const val FORK = true
         const val ALL_APPS_COLUMNS = 6
         const val DRAWER_PAD = 36 // dp inside the All apps sheet
-        /** Text over the artwork that takes its colour from the picture (see tintTexts), with its opacity. */
-        val TINTED = listOf(R.id.clock to 1f, R.id.date to 0.9f, R.id.weather to 0.85f,
-            R.id.shelfSource to 0.8f, R.id.shelfTitle to 1f, R.id.shelfSub to 0.9f)
+        /** Text over the artwork coloured from the picture (see tintTexts), in groups that share one colour. */
+        val TINTED = listOf(
+            listOf(R.id.clock, R.id.date, R.id.weather),
+            listOf(R.id.shelfSource, R.id.shelfTitle, R.id.shelfSub),
+        )
         const val SCREEN_PAD = 24 // dp margin on every edge of the screen
         const val SHELF_GAP = 24 // dp between the shelf's Resume row and the dock
         const val SHELF_OPEN_SCALE = 0.74f // shelf size while the dock is open
