@@ -2690,16 +2690,12 @@ class MainActivity : Activity() {
         val radius = dpf(28f)
         glass = GlassView(this)
         dock.addView(glass, 0, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
-        Glass.round(dock, radius)
+        glass.corner = radius // drawn in shape: no clip on the dock
         dock.foreground = Glass.rim(radius, resources.displayMetrics.density)
         // The top buttons sit on a small glass capsule of their own.
         val cap = findViewById<FrameLayout>(R.id.topGlass)
-        topGlass = GlassView(this)
+        topGlass = GlassView(this).apply { capsule = true }
         cap.addView(topGlass, 0, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
-        cap.outlineProvider = object : android.view.ViewOutlineProvider() {
-            override fun getOutline(view: View, o: android.graphics.Outline) = o.setRoundRect(0, 0, view.width, view.height, view.height / 2f)
-        }
-        cap.clipToOutline = true
         cap.foreground = GradientDrawable().apply {
             cornerRadius = dpf(40f)
             setColor(0)
@@ -2728,12 +2724,8 @@ class MainActivity : Activity() {
         // The shelf stands on the resting dock: its Resume row stays put while the title above grows or shrinks.
         (shelf.layoutParams as FrameLayout.LayoutParams).bottomMargin = dockRestHeight() + dp(SHELF_GAP)
         val playGlass = findViewById<FrameLayout>(R.id.playGlass)
-        playButtonGlass = GlassView(this)
+        playButtonGlass = GlassView(this).apply { capsule = true }
         playGlass.addView(playButtonGlass, 0, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
-        playGlass.outlineProvider = object : android.view.ViewOutlineProvider() {
-            override fun getOutline(view: View, o: android.graphics.Outline) = o.setRoundRect(0, 0, view.width, view.height, view.height / 2f)
-        }
-        playGlass.clipToOutline = true
         setupSheet()
         dockLayout()
         dockSize(0f)
@@ -2966,7 +2958,11 @@ class MainActivity : Activity() {
     }
 
     /** The glass only ever shows a heavy blur of the picture, so a tiny copy looks the same and costs ~200 KB. */
-    private fun smallCopy(b: Bitmap): Bitmap = Bitmap.createScaledBitmap(b, 320, maxOf(1, 320 * b.height / b.width), true)
+    private fun smallCopy(b: Bitmap): Bitmap {
+        val small = Bitmap.createScaledBitmap(b, 320, maxOf(1, 320 * b.height / b.width), true)
+        // Blurred once here, as strong as the old live blur (~56 px at screen size), so the glass never blurs live.
+        return blurred(small, 8).also { if (it !== small) small.recycle() }
+    }
 
     /**
      * Dock tile, tvOS style: the app's own Android TV banner (full colour, 16:9), or its logo on a glass tile
@@ -2977,10 +2973,8 @@ class MainActivity : Activity() {
         val img = ImageView(this)
         val art = customIcon(a.pkg) ?: a.banner?.let { it.constantState?.newDrawable(resources) ?: it }
         if (art != null) {
-            img.setImageDrawable(art)
-            img.scaleType = ImageView.ScaleType.CENTER_CROP
-            frame.background = ColorDrawable(0xFF1C1C1E.toInt())
-            frame.addView(img, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+            // Artwork painted into the squircle itself: no clipping needed (see TileArt).
+            frame.background = TileArt(art, tileRadius(), 0xFF1C1C1E.toInt())
         } else {
             val logo = LOGOS[a.pkg]
             val mark = when {
@@ -2990,7 +2984,7 @@ class MainActivity : Activity() {
             }
             img.setImageDrawable(mark)
             img.scaleType = ImageView.ScaleType.FIT_CENTER
-            frame.background = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(0x40FFFFFF, 0x1AFFFFFF))
+            frame.background = TileArt(null, tileRadius(), 0x40FFFFFF, 0x1AFFFFFF)
             frame.addView(img, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT).apply { setMargins(dp(34), dp(18), dp(34), dp(18)) })
         }
         focusLift(frame, tileRadius())
@@ -3006,8 +3000,7 @@ class MainActivity : Activity() {
      */
     private fun focusLift(v: View, radius: Float) {
         val sheen = SheenDrawable(radius, resources.displayMetrics.density)
-        v.foreground = sheen
-        Glass.round(v, radius)
+        v.foreground = sheen // drawn in the tile's shape, like its background: no clip
         v.cameraDistance = 9000 * resources.displayMetrics.density
         v.alpha = REST_ALPHA
         v.isFocusable = true
@@ -3161,7 +3154,7 @@ class MainActivity : Activity() {
         scrim.setBackgroundColor(0x40000000)
         scrim.removeView(panel)
         val sheet = FrameLayout(this)
-        sheetGlass = GlassView(this).apply { tint = 0x73141418 }
+        sheetGlass = GlassView(this).apply { tint = 0x73141418; corner = dpf(28f) }
         sheet.addView(sheetGlass, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         sheet.addView(panel, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         val radius = dpf(28f)

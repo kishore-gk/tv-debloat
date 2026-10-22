@@ -112,20 +112,49 @@ class GlassView(context: Context) : View(context) {
     private val at = IntArray(2)
     private val rootAt = IntArray(2)
 
-    /** Colour laid over the blurred picture; it is blurred too, which is fine for a flat tint. */
+    /** Colour laid over the picture. */
     var tint = 0x40202024
         set(v) { field = v; invalidate() }
 
     var base = 0xFF0E0E12.toInt()
 
+    /**
+     * The panel's shape, drawn rather than clipped (clipping to a path costs the GPU on every frame): continuous
+     * corners of this radius, or a capsule when [capsule].
+     */
+    var corner = 0f
+        set(v) { field = v; shapeDirty = true; invalidate() }
+    var capsule = false
+        set(v) { field = v; shapeDirty = true; invalidate() }
+
+    private val shape = Path()
+    private var shapeDirty = true
+    private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val pics = arrayOf(
+        Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG).apply { colorFilter = paint.colorFilter },
+        Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG).apply { colorFilter = paint.colorFilter },
+    )
+
     init {
+        // The picture comes in already blurred (see blurred()): no live blur, which ran on every frame.
         importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_NO
-        if (Build.VERSION.SDK_INT >= 31) {
-            val r = 56f * resources.displayMetrics.density / 2f // ~56 px on a 1080p TV
-            setRenderEffect(RenderEffect.createBlurEffect(r, r, Shader.TileMode.CLAMP))
-        } else {
-            tint = 0xCC1A1A1E.toInt() // no blur before Android 12: a denser tint reads as frosted instead
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) { shapeDirty = true }
+
+    private fun shape(): Path {
+        if (shapeDirty) {
+            shapeDirty = false
+            val w = width.toFloat()
+            val h = height.toFloat()
+            shape.reset()
+            when {
+                capsule -> shape.addRoundRect(0f, 0f, w, h, h / 2f, h / 2f, Path.Direction.CW)
+                corner > 0f -> Smooth.path(shape, 0f, 0f, w, h, corner)
+                else -> shape.addRect(0f, 0f, w, h, Path.Direction.CW)
+            }
         }
+        return shape
     }
 
     /** As tall as the panel around it, never taller: with no content of its own it would claim the whole screen. */
@@ -151,22 +180,28 @@ class GlassView(context: Context) : View(context) {
     var adapt = true
 
     override fun onDraw(c: Canvas) {
-        c.drawColor(base)
+        val sh = shape()
+        fill.color = base
+        c.drawPath(sh, fill)
         val root = rootView
         getLocationInWindow(at)
         root.getLocationInWindow(rootAt)
-        paintLayer(c, from, 1f - mix, root.width, root.height)
-        paintLayer(c, to, mix, root.width, root.height)
-        c.drawColor(tint)
+        paintLayer(c, sh, pics[0], from, 1f - mix, root.width, root.height)
+        paintLayer(c, sh, pics[1], to, mix, root.width, root.height)
+        fill.color = tint
+        c.drawPath(sh, fill)
         val b = to
         if (adapt && b != null) {
             val t = bright.to(brightness(backdropLuminance(b, this, at, rootAt)))
-            if (t > 0f) c.drawColor(Color.argb((t * 0x59).toInt(), 0x1C, 0x1C, 0x1E))
+            if (t > 0f) {
+                fill.color = Color.argb((t * 0x59).toInt(), 0x1C, 0x1C, 0x1E)
+                c.drawPath(sh, fill)
+            }
         }
     }
 
     /** Same centre crop as the full-screen backdrop, shifted by where this view sits on screen. */
-    private fun paintLayer(c: Canvas, b: Bitmap?, alpha: Float, w: Int, h: Int) {
+    private fun paintLayer(c: Canvas, sh: Path, pic: Paint, b: Bitmap?, alpha: Float, w: Int, h: Int) {
         if (b == null || alpha <= 0f || w == 0 || h == 0) return
         // A scaled parent (the resting dock) shrinks what we draw; draw the picture that much bigger so it still
         // lines up with the screen.
@@ -176,8 +211,9 @@ class GlassView(context: Context) : View(context) {
         val s = maxOf(w.toFloat() / b.width, h.toFloat() / b.height) / z
         m.setScale(s, s)
         m.postTranslate(((w - b.width * s * z) / 2f - (at[0] - rootAt[0])) / z, ((h - b.height * s * z) / 2f - (at[1] - rootAt[1])) / z)
-        paint.alpha = (alpha * 255).toInt()
-        c.drawBitmap(b, m, paint)
+        pic.shader = android.graphics.BitmapShader(b, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP).apply { setLocalMatrix(m) }
+        pic.alpha = (alpha * 255).toInt()
+        c.drawPath(sh, pic)
     }
 }
 
@@ -623,3 +659,86 @@ class GlassFrame(context: Context, attrs: AttributeSet?) : FrameLayout(context, 
     }
 }
 
+
+/**
+ * A soft blur done once on the CPU: three box-blur passes each way approximate a Gaussian. Run on the small backdrop
+ * copy (~320 px wide) whenever the picture changes, it costs a few milliseconds, and the glass then draws the
+ * finished picture instead of blurring live on every frame.
+ */
+internal fun blurred(src: Bitmap, radius: Int): Bitmap {
+    val w = src.width
+    val h = src.height
+    val a = IntArray(w * h)
+    src.getPixels(a, 0, w, 0, 0, w, h)
+    val b = IntArray(w * h)
+    repeat(3) {
+        boxPass(a, b, w, h, radius, true)
+        boxPass(b, a, w, h, radius, false)
+    }
+    return Bitmap.createBitmap(a, w, h, Bitmap.Config.ARGB_8888)
+}
+
+/** One running-sum box blur along rows ([horizontal]) or columns, edges clamped. */
+private fun boxPass(src: IntArray, dst: IntArray, w: Int, h: Int, r: Int, horizontal: Boolean) {
+    val lines = if (horizontal) h else w
+    val len = if (horizontal) w else h
+    val span = 2 * r + 1
+    for (line in 0 until lines) {
+        fun idx(i: Int) = if (horizontal) line * w + i.coerceIn(0, len - 1) else i.coerceIn(0, len - 1) * w + line
+        var sr = 0; var sg = 0; var sb = 0
+        for (i in -r..r) { val c = src[idx(i)]; sr += (c shr 16) and 255; sg += (c shr 8) and 255; sb += c and 255 }
+        for (i in 0 until len) {
+            dst[idx(i)] = (0xFF shl 24) or ((sr / span) shl 16) or ((sg / span) shl 8) or (sb / span)
+            val out = src[idx(i - r)]
+            val inn = src[idx(i + r + 1)]
+            sr += ((inn shr 16) and 255) - ((out shr 16) and 255)
+            sg += ((inn shr 8) and 255) - ((out shr 8) and 255)
+            sb += (inn and 255) - (out and 255)
+        }
+    }
+}
+
+/**
+ * A dock tile's artwork drawn straight into its continuous-corner shape, so the tile needs no clipping (clipping to
+ * a path costs the GPU every frame). The source drawable is painted into a bitmap once, at the tile's size.
+ */
+class TileArt(private val src: Drawable?, private val radius: Float, private val ground: Int, private val ground2: Int = ground) : Drawable() {
+    private val shape = Path()
+    private val back = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val art = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+    private var bmp: Bitmap? = null
+
+    override fun onBoundsChange(b: android.graphics.Rect) {
+        Smooth.path(shape, b.left.toFloat(), b.top.toFloat(), b.right.toFloat(), b.bottom.toFloat(), radius)
+        back.shader = LinearGradient(0f, b.top.toFloat(), 0f, b.bottom.toFloat(), ground, ground2, Shader.TileMode.CLAMP)
+        bmp?.recycle()
+        bmp = null
+        art.shader = null
+        if (src == null || b.width() <= 0 || b.height() <= 0) return
+        val bm = Bitmap.createBitmap(b.width(), b.height(), Bitmap.Config.ARGB_8888)
+        // Centre-crop the artwork to the tile (banners are 16:9 like the tile; custom art may not be).
+        val iw = src.intrinsicWidth.takeIf { it > 0 } ?: b.width()
+        val ih = src.intrinsicHeight.takeIf { it > 0 } ?: b.height()
+        val s = maxOf(b.width().toFloat() / iw, b.height().toFloat() / ih)
+        val dw = (iw * s).toInt()
+        val dh = (ih * s).toInt()
+        val l = (b.width() - dw) / 2
+        val t = (b.height() - dh) / 2
+        src.setBounds(l, t, l + dw, t + dh)
+        src.draw(Canvas(bm))
+        bmp = bm
+        art.shader = android.graphics.BitmapShader(bm, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP).apply {
+            setLocalMatrix(Matrix().apply { setTranslate(b.left.toFloat(), b.top.toFloat()) })
+        }
+    }
+
+    override fun draw(c: Canvas) {
+        c.drawPath(shape, back)
+        if (art.shader != null) c.drawPath(shape, art)
+    }
+
+    override fun setAlpha(alpha: Int) {}
+    override fun setColorFilter(cf: ColorFilter?) {}
+    @Deprecated("Deprecated in Java")
+    override fun getOpacity() = PixelFormat.TRANSLUCENT
+}
