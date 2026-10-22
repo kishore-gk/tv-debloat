@@ -77,12 +77,9 @@ class NewsView(context: Context) : FrameLayout(context) {
         addView(tabs)
     }
 
-    private val art = ImageView(context).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
-    private val artBox = FrameLayout(context).apply {
-        setPadding(dp(1), dp(1), dp(1), dp(1))
-        background = GradientDrawable().apply { setColor(0xFF161616.toInt()); setStroke(maxOf(1, dp(1)), RULE) }
-        addView(art, LayoutParams(MATCH_PARENT, MATCH_PARENT))
-    }
+    /** The picture, whole: fitted to the column's width or height, whichever comes first, from the top. No frame. */
+    private val art = ImageView(context).apply { scaleType = ImageView.ScaleType.FIT_START }
+    private val artBox = FrameLayout(context).apply { addView(art, LayoutParams(MATCH_PARENT, MATCH_PARENT)) }
     private val kicker = text(13f, serif, MUTED).apply { letterSpacing = 0.18f; isAllCaps = true }
     private val headline = text(36f, serifBold, INK).apply {
         maxLines = 4
@@ -90,10 +87,14 @@ class NewsView(context: Context) : FrameLayout(context) {
         setLineSpacing(0f, 1.02f)
     }
     private val summary = text(19f, serif, INK).apply {
-        maxLines = 8
         ellipsize = TextUtils.TruncateAt.END
-        setLineSpacing(0f, 1.32f)
+        setLineSpacing(0f, 1.3f)
         alpha = 0.86f
+        // As many whole lines as fit the space left in the column, ending in "…" when the text is longer.
+        addOnLayoutChangeListener { v, _, top, _, bottom, _, oldTop, _, oldBottom ->
+            val fit = maxOf(1, (bottom - top) / maxOf(1, (v as TextView).lineHeight))
+            if (v.maxLines != fit) v.post { v.maxLines = fit }
+        }
     }
     private val byline = text(16f, serifItalic, MUTED)
     private val count = text(13f, serif, MUTED).apply { letterSpacing = 0.12f }
@@ -125,7 +126,7 @@ class NewsView(context: Context) : FrameLayout(context) {
 
     init {
         setBackgroundColor(PAPER)
-        setPadding(dp(44), dp(30), dp(44), dp(28))
+        setPadding(dp(24), dp(22), dp(24), dp(24))
 
         // Masthead: date left, time right, a rule, the section line, a double rule.
         val dateRow = LinearLayout(context).apply {
@@ -159,19 +160,19 @@ class NewsView(context: Context) : FrameLayout(context) {
             addView(kicker)
             addView(headline, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(10) })
             addView(rule(0), LinearLayout.LayoutParams(dp(56), maxOf(1, dp(1))).apply { topMargin = dp(16) })
-            addView(summary, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(16) })
-            addView(byline, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(16) })
+            addView(byline, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(14) })
+            addView(summary, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f).apply { topMargin = dp(14) })
         }
         page.apply {
             orientation = LinearLayout.HORIZONTAL
             addView(left, LinearLayout.LayoutParams(0, MATCH_PARENT, 0.42f))
-            addView(rule(1), LinearLayout.LayoutParams(maxOf(1, dp(1)), MATCH_PARENT).apply { marginStart = dp(28); marginEnd = dp(28) })
+            addView(rule(1), LinearLayout.LayoutParams(maxOf(1, dp(1)), MATCH_PARENT).apply { marginStart = dp(22); marginEnd = dp(22) })
             addView(words, LinearLayout.LayoutParams(0, MATCH_PARENT, 0.58f))
         }
         addView(LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             addView(head)
-            addView(page, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f).apply { topMargin = dp(22) })
+            addView(page, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f).apply { topMargin = dp(18) })
         }, LayoutParams(MATCH_PARENT, MATCH_PARENT))
         addView(status, LayoutParams(MATCH_PARENT, WRAP_CONTENT, Gravity.CENTER))
 
@@ -209,7 +210,8 @@ class NewsView(context: Context) : FrameLayout(context) {
         }
     }
 
-    private fun setNews(list: List<News.Section>) {
+    private fun setNews(raw: List<News.Section>) {
+        val list = News.ordered(prefs, raw) { it.key }
         val key = sections.getOrNull(sec)?.key
         sections = list
         sec = list.indexOfFirst { it.key == key }.takeIf { it >= 0 } ?: 0
@@ -378,7 +380,14 @@ class NewsView(context: Context) : FrameLayout(context) {
     fun key(e: KeyEvent): Boolean {
         val arrows = setOf(KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN)
         val ok = e.keyCode == KeyEvent.KEYCODE_DPAD_CENTER || e.keyCode == KeyEvent.KEYCODE_ENTER
+        if (menu != null) return menuKey(e, ok)
         if (e.keyCode !in arrows && !ok) return false
+        // Holding OK on a section opens its menu (the first repeat of OK means "held"); a plain press acts on release.
+        if (ok && onTabs && tabAt < sections.size) {
+            if (e.action == KeyEvent.ACTION_DOWN && e.repeatCount == 1) { held = true; openMenu(tabAt) }
+            if (e.action == KeyEvent.ACTION_UP) { if (!held) { onTabs = false; styleFocus(); playSoundEffect(SoundEffectConstants.CLICK) }; held = false }
+            return true
+        }
         if (e.action != KeyEvent.ACTION_DOWN || sections.isEmpty()) return true
         var moved = true
         if (onTabs) when {
@@ -386,7 +395,7 @@ class NewsView(context: Context) : FrameLayout(context) {
             e.keyCode == KeyEvent.KEYCODE_DPAD_RIGHT -> if (tabAt < sections.size) pickTab(tabAt + 1) else moved = false
             e.keyCode == KeyEvent.KEYCODE_DPAD_UP -> moved = false
             ok && tabAt == sections.size -> { onAddTopic?.invoke(); moved = false }
-            else -> { onTabs = false; styleFocus() } // Down, or OK on a section
+            else -> { onTabs = false; styleFocus() } // Down
         } else when (e.keyCode) {
             KeyEvent.KEYCODE_DPAD_LEFT -> step(-1)
             KeyEvent.KEYCODE_DPAD_RIGHT -> step(1)
@@ -403,6 +412,107 @@ class NewsView(context: Context) : FrameLayout(context) {
         })
         return true
     }
+
+    // ---------- the section menu (hold OK on a section) ----------
+
+    private var menu: LinearLayout? = null
+    private var menuItems = emptyList<Pair<String, () -> Unit>>()
+    private var menuAt = 0
+    private var held = false
+
+    /** Move left, Move right, and Remove (your own topics) or Hide (built-in sections), set in the page's type. */
+    private fun openMenu(i: Int) {
+        val s = sections.getOrNull(i) ?: return
+        val custom = s.key.startsWith("q:")
+        menuItems = listOfNotNull(
+            if (i > 0) context.getString(R.string.news_move_left) to { move(i, -1) } else null,
+            if (i < sections.size - 1) context.getString(R.string.news_move_right) to { move(i, 1) } else null,
+            context.getString(if (custom) R.string.news_remove else R.string.news_hide) to { drop(i) },
+        )
+        menuAt = 0
+        val box = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(4), dp(4), dp(4), dp(4))
+            background = GradientDrawable().apply { setColor(0xFF141414.toInt()); setStroke(maxOf(1, dp(1)), INK) }
+            elevation = dp(12).toFloat()
+        }
+        for ((name, _) in menuItems) box.addView(TextView(context).apply {
+            text = name
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+            typeface = serif
+            letterSpacing = 0.1f
+            isAllCaps = true
+            includeFontPadding = false
+            setPadding(dp(18), dp(11), dp(30), dp(11))
+        })
+        val tab = tabs.getChildAt(i)
+        val at = IntArray(2).also { tab.getLocationInWindow(it) }
+        val me = IntArray(2).also { getLocationInWindow(it) }
+        addView(box, LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply {
+            leftMargin = at[0] - me[0]
+            topMargin = at[1] - me[1] + tab.height + dp(6)
+        })
+        menu = box
+        styleMenu()
+    }
+
+    private fun styleMenu() {
+        val box = menu ?: return
+        for (i in 0 until box.childCount) {
+            val t = box.getChildAt(i) as TextView
+            t.setBackgroundColor(if (i == menuAt) INK else 0)
+            t.setTextColor(if (i == menuAt) PAPER else INK)
+        }
+    }
+
+    private fun closeMenu() {
+        menu?.let { removeView(it) }
+        menu = null
+    }
+
+    private fun menuKey(e: KeyEvent, ok: Boolean): Boolean {
+        if (e.action != KeyEvent.ACTION_DOWN) { if (ok) held = false; return true }
+        when {
+            e.keyCode == KeyEvent.KEYCODE_DPAD_UP && menuAt > 0 -> { menuAt--; playSoundEffect(SoundEffectConstants.NAVIGATION_UP) }
+            e.keyCode == KeyEvent.KEYCODE_DPAD_DOWN && menuAt < menuItems.size - 1 -> { menuAt++; playSoundEffect(SoundEffectConstants.NAVIGATION_DOWN) }
+            ok && !held -> { val act = menuItems[menuAt].second; closeMenu(); playSoundEffect(SoundEffectConstants.CLICK); act() }
+            e.keyCode == KeyEvent.KEYCODE_BACK -> closeMenu()
+        }
+        styleMenu()
+        return true
+    }
+
+    /** Swaps a section with its neighbour and remembers the new order. */
+    private fun move(i: Int, dir: Int) {
+        val j = i + dir
+        if (j !in sections.indices) return
+        val list = sections.toMutableList()
+        java.util.Collections.swap(list, i, j)
+        News.setOrder(prefs, list.map { it.key })
+        sections = list
+        sec = j
+        tabAt = j
+        buildTabs()
+        show(0)
+    }
+
+    /** Removes your own topic, or hides a built-in section; the news moves on to the section beside it. */
+    private fun drop(i: Int) {
+        val s = sections.getOrNull(i) ?: return
+        if (s.key.startsWith("q:")) News.removeCustom(prefs, s.key.removePrefix("q:")) else News.hide(prefs, s.key)
+        if (sections.size <= 1) return
+        sections = sections.filterIndexed { k, _ -> k != i }
+        sec = i.coerceAtMost(sections.size - 1)
+        tabAt = sec
+        story = 0
+        buildTabs()
+        show(0)
+    }
+
+    /** True while the section menu is open, so Back closes it instead of leaving the news. */
+    fun menuOpen() = menu != null
+
+    fun back() = closeMenu()
 
     /** Moving along the sections shows that section straight away; "Add a topic" just takes focus. */
     private fun pickTab(i: Int) {
@@ -487,7 +597,13 @@ class NewsActivity : Activity() {
         field.requestFocus()
     }
 
-    override fun dispatchKeyEvent(e: KeyEvent): Boolean = view?.key(e) == true || super.dispatchKeyEvent(e)
+    override fun dispatchKeyEvent(e: KeyEvent): Boolean {
+        if (e.keyCode == KeyEvent.KEYCODE_BACK && view?.menuOpen() == true) {
+            if (e.action == KeyEvent.ACTION_UP) view?.back()
+            return true
+        }
+        return view?.key(e) == true || super.dispatchKeyEvent(e)
+    }
 
     override fun onDestroy() {
         view?.release()
@@ -520,6 +636,10 @@ class NewsDream : DreamService() {
     }
 
     override fun dispatchKeyEvent(e: KeyEvent): Boolean {
+        if (e.keyCode == KeyEvent.KEYCODE_BACK && view?.menuOpen() == true) {
+            if (e.action == KeyEvent.ACTION_UP) view?.back()
+            return true
+        }
         if (view?.key(e) == true) return true
         if (e.action == KeyEvent.ACTION_UP) {
             startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))

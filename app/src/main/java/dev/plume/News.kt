@@ -119,7 +119,23 @@ internal object News {
 
     fun topicsOn(prefs: SharedPreferences): List<Topic> {
         val off = prefs.getStringSet("news_off", null) ?: DEFAULT_OFF
-        return TOPICS.filter { it.key !in off && (it.key != "local" || city(prefs) != null) } + custom(prefs)
+        return ordered(prefs, TOPICS.filter { it.key !in off && (it.key != "local" || city(prefs) != null) } + custom(prefs)) { it.key }
+    }
+
+    /** The section order you set (long-press a section on the news screen); new ones go at the end. */
+    fun order(prefs: SharedPreferences): List<String> = (prefs.getString("news_order", "") ?: "").split('\n').filter { it.isNotEmpty() }
+
+    fun setOrder(prefs: SharedPreferences, keys: List<String>) { prefs.edit().putString("news_order", keys.joinToString("\n")).apply() }
+
+    fun <T> ordered(prefs: SharedPreferences, items: List<T>, key: (T) -> String): List<T> {
+        val o = order(prefs)
+        return items.withIndex().sortedBy { (i, it) -> o.indexOf(key(it)).let { at -> if (at < 0) o.size + i else at } }.map { it.value }
+    }
+
+    /** Hides a built-in section (it can be turned back on in settings → News → Topics). */
+    fun hide(prefs: SharedPreferences, key: String) {
+        val off = prefs.getStringSet("news_off", null) ?: DEFAULT_OFF
+        prefs.edit().putStringSet("news_off", off + key).apply()
     }
 
     /** Local news follows the weather location (automatic from the IP, or the city picked in settings). */
@@ -150,7 +166,7 @@ internal object News {
 
     /** The settings the saved news was fetched with: a change (edition, topics, city) refetches at once. */
     private fun signature(prefs: SharedPreferences) =
-        edition(prefs).ceid + "|" + topicsOn(prefs).joinToString(",") { it.key } + "|" + (city(prefs) ?: "")
+        edition(prefs).ceid + "|" + topicsOn(prefs).map { it.key }.sorted().joinToString(",") + "|" + (city(prefs) ?: "")
 
     /**
      * Fetches every section that's on, unless the saved news is fresh and was fetched with the same settings.
@@ -284,10 +300,12 @@ internal object News {
             try {
                 val og = openGraph(page)
                 og["og:image"]?.takeIf { it.startsWith("http") }?.let { image = it }
-                val longer = og["og:description"] ?: og["description"]
+                // The longest of: the article's opening (its embedded text or first paragraphs), the page's own
+                // summary, and Bing's snippet.
+                val longer = listOfNotNull(og["body"], og["og:description"], og["description"]).maxByOrNull { it.length }
                 if (longer != null && longer.length > summary.length) summary = longer
-            } catch (e: Exception) {
-                // Paywalls, consent pages and app-only sites: keep what Bing gave.
+            } catch (e: Throwable) {
+                // Paywalls, consent pages, app-only sites, odd pages: keep what Bing gave.
             }
         }
         val d = Detail(clean(summary), image, url)
@@ -328,18 +346,20 @@ internal object News {
         }
     }
 
-    /** og:image, og:description and the plain description meta tag from the start of a web page. */
+    /**
+     * From a web page: og:image, og:description, the plain description, and "body": the article's opening, from
+     * the full text many news sites embed for search engines (articleBody), or else its first real paragraphs.
+     */
     private fun openGraph(page: String): Map<String, String> {
         val con = open(page)
         if (con.responseCode !in 200..299) return emptyMap()
         val head = con.inputStream.use { input ->
             val buf = java.io.ByteArrayOutputStream()
-            val chunk = ByteArray(16 * 1024)
-            while (buf.size() < 400 * 1024) { // the tags are in <head>; stop well before a long page ends
+            val chunk = ByteArray(32 * 1024)
+            while (buf.size() < 900 * 1024) { // enough for the article's start on most pages
                 val n = input.read(chunk)
                 if (n < 0) break
                 buf.write(chunk, 0, n)
-                if (buf.toString("UTF-8").contains("</head>", ignoreCase = true)) break
             }
             buf.toString("UTF-8")
         }
@@ -352,7 +372,44 @@ internal object News {
             if (key in setOf("og:image", "og:description", "description", "twitter:image") && key !in out) out[key] = value
         }
         if ("og:image" !in out) out["twitter:image"]?.let { out["og:image"] = it }
+        articleOpening(head)?.let { out["body"] = it }
         return out
+    }
+
+    private fun articleOpening(html: String): String? {
+        // The embedded full text, read as a JSON string by hand: a regex over a long article can overflow the stack.
+        val key = html.indexOf("\"articleBody\"")
+        if (key >= 0) {
+            var i = html.indexOf('"', html.indexOf(':', key) + 1)
+            if (i > 0) {
+                val sb = StringBuilder()
+                i++
+                while (i < html.length && sb.length < 3000) {
+                    val ch = html[i]
+                    if (ch == '"') break
+                    if (ch == '\\' && i + 1 < html.length) {
+                        when (val e = html[i + 1]) {
+                            'n', 'r', 't' -> sb.append(' ')
+                            'u' -> if (i + 5 < html.length) {
+                                html.substring(i + 2, i + 6).toIntOrNull(16)?.let { sb.append(it.toChar()) }
+                                i += 4
+                            }
+                            else -> sb.append(e)
+                        }
+                        i += 2
+                        continue
+                    }
+                    sb.append(ch)
+                    i++
+                }
+                if (sb.length > 200) return sb.toString()
+            }
+        }
+        val paras = Regex("<p[^>]*>(.*?)</p>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)).findAll(html)
+            .map { android.text.Html.fromHtml(it.groupValues[1], android.text.Html.FROM_HTML_MODE_LEGACY).toString().replace(Regex("\\s+"), " ").trim() }
+            .filter { it.length > 80 && !it.contains("cookie", ignoreCase = true) && !it.contains("subscribe", ignoreCase = true) }
+            .take(4).toList()
+        return paras.joinToString(" ").takeIf { it.length > 120 }
     }
 
     private fun open(url: String) = (URL(url).openConnection() as HttpURLConnection).apply {
@@ -371,13 +428,13 @@ internal object News {
         return words(a).count { it in wb }.toDouble() / wb.size
     }
 
-    /** HTML entities and tags out, whitespace tidied, and cut at a sentence end near 420 characters. */
+    /** HTML entities and tags out, whitespace tidied, and cut at a sentence end near 1100 characters. */
     private fun clean(s: String): String {
         val t = android.text.Html.fromHtml(s, android.text.Html.FROM_HTML_MODE_LEGACY).toString()
             .replace(Regex("\\s+"), " ").trim().removeSuffix("...").removeSuffix("…").trim()
-        if (t.length <= 420) return t
-        val cut = t.substring(0, 420)
+        if (t.length <= 1100) return t
+        val cut = t.substring(0, 1100)
         val end = cut.lastIndexOfAny(charArrayOf('.', '!', '?'))
-        return if (end > 200) cut.substring(0, end + 1) else cut.substringBeforeLast(' ') + "…"
+        return if (end > 500) cut.substring(0, end + 1) else cut.substringBeforeLast(' ') + "…"
     }
 }
