@@ -244,6 +244,7 @@ class MainActivity : Activity() {
     private lateinit var topGlass: GlassView
     private lateinit var clock: GlassClock
     private lateinit var date: GlassClock
+    private lateinit var weather: GlassText
     private lateinit var sheetGlass: GlassView
     private var dockOpen = -1f // 0 compact, 1 open (lens and name room); -1 not laid out yet
     private var dockAnim: ValueAnimator? = null
@@ -2706,9 +2707,16 @@ class MainActivity : Activity() {
         }
         clock = findViewById(R.id.clock)
         date = findViewById<GlassClock>(R.id.date).apply {
-            frostiness = 0.9f
-            edge = 0.8f * resources.displayMetrics.density
+            ink.frostiness = 0.9f
+            ink.edge = 0.8f * resources.displayMetrics.density
         }
+        weather = findViewById<GlassText>(R.id.weather).apply {
+            ink.frostiness = 0.85f
+            ink.edge = 0.8f * resources.displayMetrics.density
+        }
+        // The shelf's top stays pinned a little above the middle of the screen; dockSize scales it from there.
+        (shelf.layoutParams as FrameLayout.LayoutParams).topMargin =
+            (resources.displayMetrics.heightPixels * SHELF_TOP).toInt() - dp(28) // minus the content's top padding
         setupSheet()
         dockSize(0f)
         lens = FocusLens(this, tileRadius() + dp(LENS_PAD))
@@ -2728,7 +2736,7 @@ class MainActivity : Activity() {
     private fun softShadows() {
         val big = dpf(14f)
         val small = dpf(8f)
-        for ((id, r) in listOf(R.id.shelfTitle to big, R.id.weather to small,
+        for ((id, r) in listOf(R.id.shelfTitle to big,
             R.id.shelfSource to small, R.id.shelfSub to small)) {
             findViewById<TextView>(id).setShadowLayer(r, 0f, dpf(1.5f), if (r == big) 0x73000000 else 0x8C000000.toInt())
         }
@@ -2861,8 +2869,9 @@ class MainActivity : Activity() {
         glass.show(small)
         topGlass.show(small)
         sheetGlass.show(small)
-        clock.source = small
-        date.source = small
+        clock.ink.source = small
+        date.ink.source = small
+        weather.ink.source = small
     }
 
     private fun loadHero(p: Prog) {
@@ -3063,6 +3072,7 @@ class MainActivity : Activity() {
             }
             v.requestLayout()
         }
+        shelfSize(f)
         val scale = DOCK_REST_SCALE + (1f - DOCK_REST_SCALE) * f
         dock.scaleX = scale
         dock.scaleY = scale
@@ -3070,6 +3080,25 @@ class MainActivity : Activity() {
         dock.pivotY = dock.height.toFloat()
         dock.post { dock.pivotX = dock.width / 2f; dock.pivotY = dock.height.toFloat() } // after the new height lays out
         glass.invalidate() // its picture is lined up with the screen, which moves as the dock scales
+    }
+
+    /**
+     * The shelf answers the dock: with the dock resting it is at full size, its lines spaced generously and its
+     * bottom reaching down into the room the dock left; as the dock opens it shrinks towards its pinned top-left
+     * corner and its spacing tightens, so it always clears the dock. [f] as in [dockSize].
+     */
+    private fun shelfSize(f: Float) {
+        fun gap(open: Int, rest: Int) = dp(rest) + ((dp(open) - dp(rest)) * f).toInt()
+        val s = 1f - (1f - SHELF_OPEN_SCALE) * f
+        shelf.pivotX = 0f
+        shelf.pivotY = 0f
+        shelf.scaleX = s
+        shelf.scaleY = s
+        for ((id, open, rest) in listOf(
+            Triple(R.id.shelfTitle, 4, 10), Triple(R.id.shelfSub, 6, 12), Triple(R.id.shelfProgress, 10, 16),
+        )) (findViewById<View>(id).layoutParams as ViewGroup.MarginLayoutParams).topMargin = gap(open, rest)
+        ((findViewById<View>(R.id.shelfPlay).parent as View).layoutParams as ViewGroup.MarginLayoutParams).topMargin = gap(14, 26)
+        shelf.requestLayout()
     }
 
     /** Settings as a floating frosted sheet on the right, like an iOS sidebar, with the dock's glass and rim. */
@@ -3287,6 +3316,8 @@ class MainActivity : Activity() {
         const val DOCK_GAP = 28 // dp; room for the lens between tiles
         const val SHELF_EVERY = 9_000L // Top Shelf turns to the next item this often while it isn't focused
         const val FORK = true
+        const val SHELF_TOP = 0.40f // the shelf's top edge, as a share of the screen height
+        const val SHELF_OPEN_SCALE = 0.74f // shelf size while the dock is open
         const val DOCK_REST_PAD = 12 // dp of glass above and below the tiles while the dock rests
         const val DOCK_REST_SCALE = 0.62f // resting dock size; with the smaller padding, ~40% of the open height
         val SHELF_KEYS = setOf(KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT)

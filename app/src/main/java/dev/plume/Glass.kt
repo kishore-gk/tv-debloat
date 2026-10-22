@@ -405,17 +405,19 @@ class SheenDrawable(private val radius: Float, private val density: Float) : Dra
 }
 
 /**
- * Lock-screen glass digits (iOS 26): the clock is cut out of frosted glass. Each glyph shows the blurred picture
- * behind it, brightened, with a light edge along the top that fades down the strokes; no flat white fill.
+ * Lock-screen glass text (iOS 26): letters cut out of frosted glass. Each glyph shows the blurred picture behind
+ * it, brightened, with light catching its top edge; no flat white fill. Shared by the clock, date and weather.
  * [source] is the same small copy of the backdrop the dock's glass uses; scaled up, it is already soft.
  */
-class GlassClock(context: Context, attrs: AttributeSet?) : android.widget.TextClock(context, attrs) {
+class GlassInk(private val view: android.widget.TextView) {
     var source: Bitmap? = null
-        set(v) { field = v; invalidate() }
+        set(v) { field = v; view.invalidate() }
 
-    /** How white the frost is, 0..1: small text (the date) needs more to stay readable than the big time. */
+    /** How white the frost is, 0..1: small text needs more to stay readable than the big time. */
     var frostiness = 0.5f
-        set(v) { field = v; invalidate() }
+        set(v) { field = v; view.invalidate() }
+
+    var edge = 1.4f * view.resources.displayMetrics.density
 
     private val pic = Paint(Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG).apply {
         xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.SRC_IN)
@@ -424,46 +426,72 @@ class GlassClock(context: Context, attrs: AttributeSet?) : android.widget.TextCl
     private val frost = Paint().apply {
         xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.SRC_ATOP)
     }
+    private val cut = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.DST_OUT)
     private val m = Matrix()
     private val at = IntArray(2)
     private val rootAt = IntArray(2)
-    var edge = 1.4f * resources.displayMetrics.density
-    private val cut = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.DST_OUT)
 
-    override fun onDraw(c: Canvas) {
-        val p = paint
+    fun draw(c: Canvas, text: (Canvas) -> Unit) {
+        val v = view
+        val p = v.paint
+        val w = v.width.toFloat()
+        val h = v.height.toFloat()
         // 1. The glyphs as a mask, then the blurred picture inside them, lightened like frosted glass.
-        val layer = c.saveLayer(0f, 0f, width.toFloat(), height.toFloat(), null)
+        val layer = c.saveLayer(0f, 0f, w, h, null)
         p.style = Paint.Style.FILL
-        super.onDraw(c)
+        text(c)
         val b = source
         if (b != null) {
-            val root = rootView
-            getLocationInWindow(at)
+            val root = v.rootView
+            v.getLocationInWindow(at)
             root.getLocationInWindow(rootAt)
             val s = maxOf(root.width.toFloat() / b.width, root.height.toFloat() / b.height)
             m.setScale(s, s)
-            m.postTranslate((root.width - b.width * s) / 2f - (at[0] - rootAt[0]) + scrollX, (root.height - b.height * s) / 2f - (at[1] - rootAt[1]) + scrollY)
+            m.postTranslate((root.width - b.width * s) / 2f - (at[0] - rootAt[0]) + v.scrollX, (root.height - b.height * s) / 2f - (at[1] - rootAt[1]) + v.scrollY)
             c.drawBitmap(b, m, pic)
         }
         val top = if (b == null) 0.95f else 0.3f + frostiness * 0.5f
         val bottom = if (b == null) 0.85f else 0.15f + frostiness * 0.5f
-        frost.shader = LinearGradient(0f, 0f, 0f, height.toFloat(), Color.argb((top * 255).toInt(), 255, 255, 255),
+        frost.shader = LinearGradient(0f, 0f, 0f, h, Color.argb((top * 255).toInt(), 255, 255, 255),
             Color.argb((bottom * 255).toInt(), 255, 255, 255), Shader.TileMode.CLAMP)
         c.drawPaint(frost)
         c.restoreToCount(layer)
-        // 2. The lit edge: light catching the top of each glyph. Drawn as the glyph minus itself nudged down, not as
-        //    a stroke: font outlines overlap inside some digits (4, 9), and a stroke would trace those as lines.
-        val lit = c.saveLayer(0f, 0f, width.toFloat(), height.toFloat(), null)
-        p.shader = LinearGradient(0f, 0f, 0f, height.toFloat(), 0xF2FFFFFF.toInt(), 0x59FFFFFF, Shader.TileMode.CLAMP)
-        super.onDraw(c)
+        // 2. Light catching the top of each glyph: the glyph minus itself nudged down. Not a stroke: font outlines
+        //    overlap inside some characters (4, 9), and a stroke would trace those as lines.
+        val lit = c.saveLayer(0f, 0f, w, h, null)
+        p.shader = LinearGradient(0f, 0f, 0f, h, 0xF2FFFFFF.toInt(), 0x59FFFFFF, Shader.TileMode.CLAMP)
+        text(c)
         p.shader = null
         p.xfermode = cut
         c.translate(0f, edge)
-        super.onDraw(c)
+        text(c)
         c.translate(0f, -edge)
         p.xfermode = null
         c.restoreToCount(lit)
-        p.style = Paint.Style.FILL
+    }
+}
+
+/** The clock and date in glass (see [GlassInk]). */
+class GlassClock(context: Context, attrs: AttributeSet?) : android.widget.TextClock(context, attrs) {
+    val ink = GlassInk(this)
+    override fun onDraw(c: Canvas) = ink.draw(c) { super.onDraw(it) }
+}
+
+/** Any line of text in glass (see [GlassInk]): the weather. */
+class GlassText(context: Context, attrs: AttributeSet?) : android.widget.TextView(context, attrs) {
+    val ink = GlassInk(this)
+    override fun onDraw(c: Canvas) = ink.draw(c) { super.onDraw(it) }
+}
+
+/**
+ * A frame that sizes to its content and then stretches any [GlassView] in it to fill itself. FrameLayout only does
+ * that when it holds two or more full-size children, so a glass capsule around one row of buttons came out empty.
+ */
+class GlassFrame(context: Context, attrs: AttributeSet?) : FrameLayout(context, attrs) {
+    override fun onMeasure(w: Int, h: Int) {
+        super.onMeasure(w, h)
+        val ew = MeasureSpec.makeMeasureSpec(measuredWidth, MeasureSpec.EXACTLY)
+        val eh = MeasureSpec.makeMeasureSpec(measuredHeight, MeasureSpec.EXACTLY)
+        for (i in 0 until childCount) (getChildAt(i) as? GlassView)?.measure(ew, eh)
     }
 }

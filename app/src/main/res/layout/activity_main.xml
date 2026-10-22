@@ -46,7 +46,7 @@
             android:orientation="horizontal">
 
             <!-- Glass capsule for the buttons (blur added in code); padding is room for the focused one to grow. -->
-            <FrameLayout
+            <dev.plume.GlassFrame
                 android:id="@+id/topGlass"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
@@ -99,7 +99,7 @@
                     android:padding="9dp"
                     android:src="@drawable/ic_tune" />
             </LinearLayout>
-            </FrameLayout>
+            </dev.plume.GlassFrame>
 
             <View
                 android:layout_width="0dp"
@@ -138,17 +138,16 @@
 
 
                 <!-- "24° Clear · Bengaluru". Off unless turned on in launcher settings. -->
-                <TextView
+                <dev.plume.GlassText
                     android:id="@+id/weather"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginTop="2dp"
-                    android:alpha="0.7"
-                    android:fontFamily="sans-serif"
+                    android:layout_marginTop="4dp"
+                    android:layout_marginEnd="3dp"
+                    android:fontFamily="sans-serif-medium"
+                    android:includeFontPadding="false"
                     android:maxLines="1"
-                    android:shadowColor="#66000000"
-                    android:shadowRadius="8"
-                    android:textSize="15sp"
+                    android:textSize="17sp"
                     android:visibility="gone" />
             </LinearLayout>
         </LinearLayout>
@@ -158,8 +157,7 @@
             android:id="@+id/shelf"
             android:layout_width="460dp"
             android:layout_height="wrap_content"
-            android:layout_gravity="bottom|start"
-            android:layout_marginBottom="172dp"
+            android:layout_gravity="top|start"
             android:clipChildren="false"
             android:clipToPadding="false"
             android:focusable="true"
