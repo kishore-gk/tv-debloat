@@ -2720,6 +2720,11 @@ class MainActivity : Activity() {
             ink.frostiness = 0.85f
             ink.edge = 0.8f * resources.displayMetrics.density
         }
+        // Each glass text drawn once into its own cached layer (see GlassInk.cacheWithShadow).
+        clock.ink.cacheWithShadow()
+        date.ink.cacheWithShadow()
+        weather.ink.cacheWithShadow()
+        for (id in intArrayOf(R.id.shelfSource, R.id.shelfTitle, R.id.shelfSub)) findViewById<GlassText>(id).ink.cacheWithShadow()
         // The shelf stands on the resting dock: its Resume row stays put while the title above grows or shrinks.
         (shelf.layoutParams as FrameLayout.LayoutParams).bottomMargin = dockRestHeight() + dp(SHELF_GAP)
         val playGlass = findViewById<FrameLayout>(R.id.playGlass)

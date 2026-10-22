@@ -502,13 +502,13 @@ class GlassInk(private val view: android.widget.TextView) {
         val lightLow = if (b == null) 0.85f else 0.15f + frostiness * 0.5f
         val top = mix(Color.argb((light * 255).toInt(), 255, 255, 255), Color.argb(((0.62f + frostiness * 0.2f) * 255).toInt(), 0x1C, 0x1C, 0x1E), t)
         val bottom = mix(Color.argb((lightLow * 255).toInt(), 255, 255, 255), Color.argb(((0.72f + frostiness * 0.2f) * 255).toInt(), 0x1C, 0x1C, 0x1E), t)
-        frost.shader = LinearGradient(0f, 0f, 0f, h, top, bottom, Shader.TileMode.CLAMP)
+        frost.shader = LinearGradient(0f, v.paddingTop.toFloat(), 0f, h - v.paddingBottom, top, bottom, Shader.TileMode.CLAMP)
         c.drawPaint(frost)
         c.restoreToCount(layer)
         // 2. Light catching the top of each glyph: the glyph minus itself nudged down. Not a stroke: font outlines
         //    overlap inside some characters (4, 9), and a stroke would trace those as lines.
         val lit = c.saveLayer(0f, 0f, w, h, null)
-        p.shader = LinearGradient(0f, 0f, 0f, h, Color.argb((0xF2 - 0x80 * t).toInt(), 255, 255, 255),
+        p.shader = LinearGradient(0f, v.paddingTop.toFloat(), 0f, h - v.paddingBottom, Color.argb((0xF2 - 0x80 * t).toInt(), 255, 255, 255),
             Color.argb((0x59 - 0x30 * t).toInt(), 255, 255, 255), Shader.TileMode.CLAMP)
         text(c)
         p.shader = null
@@ -530,7 +530,7 @@ class GlassInk(private val view: android.widget.TextView) {
     private fun shadow(c: Canvas, text: (Canvas) -> Unit, t: Float) {
         val k = (v().textSize / (40f * d)).coerceIn(0.45f, 1.6f) * d
         val strength = 1f - 0.6f * t
-        val layer = c.saveLayer(-200f * d, -200f * d, view.width + 200f * d, view.height + 200f * d, null)
+        val layer = c.saveLayer(0f, 0f, view.width.toFloat(), view.height.toFloat(), null)
         val p = view.paint
         p.color = 0xFF000000.toInt()
         for ((r, dy, a) in LAYERS) {
@@ -546,6 +546,32 @@ class GlassInk(private val view: android.widget.TextView) {
 
     private fun v() = view
 
+    /** How far the widest shadow reaches past the letters, in px: the room [cacheWithShadow] gives the view. */
+    fun shadowReach(): Int {
+        val k = (view.textSize / (40f * d)).coerceIn(0.45f, 1.6f) * d
+        return LAYERS.maxOf { (r, dy, _) -> r + dy }.let { (it * k).toInt() + 2 }
+    }
+
+    /**
+     * Glass text is costly to draw (four blurred shadows, the frosted picture, the lit edge), and Android redraws
+     * every view on screen whenever anything moves. So it is drawn once into its own GPU layer and reused until
+     * the text or picture changes. The layer is the view's size, so the view gets padding as deep as its shadow
+     * (with matching negative margins, so nothing moves).
+     */
+    fun cacheWithShadow() {
+        val pad = shadowReach()
+        view.setPadding(view.paddingLeft + pad, view.paddingTop + pad, view.paddingRight + pad, view.paddingBottom + pad)
+        (view.layoutParams as? android.view.ViewGroup.MarginLayoutParams)?.apply {
+            val start = marginStart // read both first: setting one relative margin changes how the other resolves
+            val end = marginEnd
+            marginStart = start - pad
+            marginEnd = end - pad
+            topMargin -= pad
+            bottomMargin -= pad
+        }
+        view.setLayerType(View.LAYER_TYPE_HARDWARE, null)
+    }
+
     private fun mix(a: Int, b: Int, t: Float) = Color.argb(
         (Color.alpha(a) + (Color.alpha(b) - Color.alpha(a)) * t).toInt(),
         (Color.red(a) + (Color.red(b) - Color.red(a)) * t).toInt(),
@@ -555,7 +581,7 @@ class GlassInk(private val view: android.widget.TextView) {
 
     private companion object {
         /** (blur radius, drop, opacity) per shadow layer, in dp at 40 sp text. */
-        val LAYERS = listOf(Triple(1.5f, 1f, 0.22f), Triple(5f, 2.5f, 0.16f), Triple(12f, 6f, 0.12f), Triple(26f, 12f, 0.09f))
+        val LAYERS = listOf(Triple(1.5f, 1f, 0.24f), Triple(4f, 2f, 0.18f), Triple(9f, 4.5f, 0.13f), Triple(18f, 8f, 0.10f))
     }
 }
 
