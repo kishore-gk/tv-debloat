@@ -73,6 +73,24 @@
             </intent-filter>
         </service>
 
+        <!-- News screensaver; picked in launcher settings like Gallery. -->
+        <service
+            android:name=".NewsDream"
+            android:exported="true"
+            android:label="@string/news"
+            android:permission="android.permission.BIND_DREAM_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.dreams.DreamService" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </service>
+
+        <!-- The news screen: from the morning briefing on the shelf, or OK in the news screensaver. -->
+        <activity
+            android:name=".NewsActivity"
+            android:exported="false"
+            android:screenOrientation="landscape" />
+
         <!-- Google TV's launcher must stay enabled; this service replaces it on screen whenever it shows. -->
         <service
             android:name=".HomeOverride"

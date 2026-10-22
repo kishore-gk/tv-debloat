@@ -365,6 +365,7 @@ class MainActivity : Activity() {
         if (appsDirty) refreshApps() else if (appRow.childCount == 0) renderApps()
         refreshWatchNext()
         scheduleShelfTick()
+        refreshNews()
         showWeather()
         ui.removeCallbacks(weatherTick)
         ui.post(weatherTick)
@@ -407,6 +408,7 @@ class MainActivity : Activity() {
         ui.removeCallbacks(wallpaperTick)
         ui.removeCallbacks(shelfTick)
         if (editing) endEdit()
+        saveBackdrop()
         super.onPause()
     }
 
@@ -1145,9 +1147,28 @@ class MainActivity : Activity() {
             R.string.weather_location to Triple(getString(R.string.weather_location), if (manualCity()) prefs.getString("geo_city", null) ?: "" else "Automatic") { pickCity() },
             R.string.screensaver to Triple(getString(R.string.screensaver), when {
                 downloading -> getString(R.string.downloading_gallery)
+                newsOn() -> getString(R.string.news)
                 !galleryOn() -> screensaverName()
                 else -> photoScreensaver()?.let { wallpaperName(it) } ?: getString(R.string.gallery)
             }) { pickScreensaver() },
+            R.string.news_region to Triple(getString(R.string.news_region), News.edition(prefs).name) { pickEdition() },
+            R.string.news_topics to Triple(getString(R.string.news_topics),
+                News.topicsOn(prefs).joinToString(", ") { News.sectionName(it, prefs) }) { pickTopics() },
+            R.string.news_local to Triple(getString(R.string.news_local), News.city(prefs) ?: getString(R.string.news_follows_weather)) { pickCity() },
+            R.string.news_morning to Triple(getString(R.string.news_morning), toggle(prefs.getBoolean("news_morning", true))) {
+                prefs.edit().putBoolean("news_morning", !prefs.getBoolean("news_morning", true)).apply()
+                watchKey = null
+                refreshWatchNext()
+                renderSettings(R.string.news_morning)
+            },
+            R.string.news_screensaver to Triple(getString(R.string.news_screensaver), toggle(newsOn())) {
+                if (newsOn()) stopGallery() else useNews()
+                renderSettings(R.string.news_screensaver)
+            },
+            R.string.news_open to Triple(getString(R.string.news_open), "") {
+                closeLauncherSettings()
+                startActivity(Intent(this, NewsActivity::class.java))
+            },
             R.string.test_screensaver to Triple(getString(R.string.test_screensaver), "") { testScreensaver() },
             R.string.screensaver_timing to Triple(getString(R.string.screensaver_timing), "") { openScreensaverSettings() },
             R.string.setup_home to Triple(getString(R.string.setup_home), "") { closeLauncherSettings(); startHomeSetup() },
@@ -1176,6 +1197,8 @@ class MainActivity : Activity() {
             Triple(R.string.continue_watching, rows[R.string.cw_apps]!!.second, listOf(R.string.cw_apps, R.string.restore_hidden)),
             Triple(R.string.section_weather, if (weather == "off") on(false) else "${rows[R.string.weather_units]!!.second} · ${rows[R.string.weather_location]!!.second}",
                 listOf(R.string.weather, R.string.weather_units, R.string.weather_location)),
+            Triple(R.string.section_news, News.edition(prefs).name,
+                listOf(R.string.news_open, R.string.news_region, R.string.news_topics, R.string.news_local, R.string.news_morning, R.string.news_screensaver)),
             Triple(R.string.section_screensaver, rows[R.string.screensaver]!!.second, listOf(R.string.screensaver, R.string.test_screensaver, R.string.screensaver_timing)),
             Triple(R.string.section_home, on(homeServiceOn() || isDefaultHome()), listOf(R.string.setup_home, R.string.home_button, R.string.default_launcher)),
         )
@@ -1994,6 +2017,26 @@ class MainActivity : Activity() {
 
     private fun galleryOn() = currentScreensaver() == gallery()
 
+    private fun newsDream() = ComponentName(this, NewsDream::class.java).flattenToString()
+
+    private fun newsOn() = currentScreensaver() == newsDream()
+
+    /** One of Plume's own screensavers is set; the one before it is kept in "prev_screensaver" to go back to. */
+    private fun oursOn() = galleryOn() || newsOn()
+
+    /** News as the screensaver (needs the adb-granted permission, like Gallery). */
+    private fun useNews() {
+        if (newsOn()) return
+        if (checkSelfPermission(WRITE_SECURE) != PackageManager.PERMISSION_GRANTED) {
+            Toast.makeText(this, getString(R.string.choose_gallery_hint), Toast.LENGTH_LONG).show()
+            return openScreensaverSettings()
+        }
+        if (!oursOn()) prefs.edit().putString("prev_screensaver", currentScreensaver()).apply()
+        Settings.Secure.putString(contentResolver, "screensaver_components", newsDream())
+        Settings.Secure.putInt(contentResolver, "screensaver_enabled", 1)
+        if (galleryOn()) paintingsDir(this).deleteRecursively()
+    }
+
     private fun screensaverName(component: String = currentScreensaver()): String {
         val pkg = ComponentName.unflattenFromString(component)?.packageName ?: return getString(R.string.off)
         return try {
@@ -2009,7 +2052,7 @@ class MainActivity : Activity() {
     private fun pickScreensaver(focus: Int = 0) {
         val paintings = galleryOn() && photoScreensaver() == null
         val photos = galleryOn() && photoScreensaver() != null
-        val other = if (galleryOn()) prefs.getString("prev_screensaver", "").orEmpty() else currentScreensaver()
+        val other = if (oursOn()) prefs.getString("prev_screensaver", "").orEmpty() else currentScreensaver()
         showPage(getString(R.string.screensaver), listOf(
             page(getString(R.string.gallery_paintings), if (paintings) CHOSEN else if (downloading) getString(R.string.downloading) else PAINTINGS_MB) {
                 useGallery(null)
@@ -2021,9 +2064,13 @@ class MainActivity : Activity() {
                     pickScreensaver(1)
                 }
             },
-            page(screensaverName(other), if (galleryOn()) "" else CHOSEN) {
-                if (galleryOn()) stopGallery()
+            page(getString(R.string.news), if (newsOn()) CHOSEN else "") {
+                useNews()
                 pickScreensaver(2)
+            },
+            page(screensaverName(other), if (oursOn()) "" else CHOSEN) {
+                if (oursOn()) stopGallery()
+                pickScreensaver(3)
             },
         ), focus) { renderSettings(R.string.screensaver) }
     }
@@ -2034,12 +2081,13 @@ class MainActivity : Activity() {
         if (folder == null && !paintingsReady(this)) return downloadPaintings { useGallery(null) }
         if (folder != null) paintingsDir(this).deleteRecursively() // not needed for photos: give the space back
         if (galleryOn()) return
+        val fromNews = newsOn()
         if (checkSelfPermission(WRITE_SECURE) != PackageManager.PERMISSION_GRANTED) {
             // Without the adb permission Plume can't switch it itself; Android's own list has getString(R.string.gallery).
             Toast.makeText(this, getString(R.string.choose_gallery_hint), Toast.LENGTH_LONG).show()
             return openScreensaverSettings()
         }
-        prefs.edit().putString("prev_screensaver", currentScreensaver()).apply()
+        if (!fromNews) prefs.edit().putString("prev_screensaver", currentScreensaver()).apply()
         Settings.Secure.putString(contentResolver, "screensaver_components", gallery())
         Settings.Secure.putInt(contentResolver, "screensaver_enabled", 1)
     }
@@ -2271,9 +2319,10 @@ class MainActivity : Activity() {
         io.execute {
             try {
                 if (!manualCity() && System.currentTimeMillis() - prefs.getLong("geo_time", 0) > 6 * 3600_000L) {
-                    val geo = getJson("https://ipwho.is/?fields=success,city,latitude,longitude")
+                    val geo = getJson("https://ipwho.is/?fields=success,city,country_code,latitude,longitude")
                     if (geo.optBoolean("success")) prefs.edit()
                         .putString("geo_city", geo.getString("city"))
+                        .putString("geo_cc", geo.optString("country_code"))
                         .putFloat("geo_lat", geo.getDouble("latitude").toFloat())
                         .putFloat("geo_lon", geo.getDouble("longitude").toFloat())
                         .putLong("geo_time", System.currentTimeMillis()).apply()
@@ -2415,7 +2464,8 @@ class MainActivity : Activity() {
             } catch (e: Exception) {
                 emptyList()
             }
-            ui.post { showWatchNext(list) }
+            val all = listOfNotNull(briefing()) + list
+            ui.post { showWatchNext(all) }
         }
     }
 
@@ -2667,7 +2717,8 @@ class MainActivity : Activity() {
         val parts = listOf(src, title, sub, bar)
         val rest = mapOf<View, Float>(src to 1f, title to 1f, sub to 1f, bar to 1f) // softer lines get it from their colour (TINTED)
         val fill = { glideShelfHeight {
-            src.text = apps.firstOrNull { it.pkg == p.pkg }?.label.orEmpty()
+            src.text = if (p.intent == NEWS_INTENT) getString(R.string.news_briefing) else apps.firstOrNull { it.pkg == p.pkg }?.label.orEmpty()
+            findViewById<TextView>(R.id.shelfPlay).text = getString(if (p.intent == NEWS_INTENT) R.string.news_read else R.string.resume)
             title.text = p.title
             sub.text = p.sub
             sub.visibility = if (p.sub.isEmpty()) View.GONE else View.VISIBLE
@@ -2983,6 +3034,77 @@ class MainActivity : Activity() {
         return true
     }
 
+    // ---------- news ----------
+
+    /** Fetches the news in the background if it's stale; the morning briefing on the shelf updates when it lands. */
+    @Volatile private var fetchingNews = false
+
+    private fun refreshNews() {
+        if (fetchingNews) return
+        fetchingNews = true
+        // Its own thread: a slow feed must not hold up the shelf, apps or wallpaper on the io thread.
+        Thread {
+            try {
+                val before = prefs.getLong("news_time", 0)
+                News.refresh(this, prefs)
+                if (prefs.getLong("news_time", 0) != before && briefingHours()) ui.post { watchKey = null; refreshWatchNext() }
+            } finally {
+                fetchingNews = false
+            }
+        }.start()
+    }
+
+    private fun briefingHours() = Calendar.getInstance().get(Calendar.HOUR_OF_DAY) in BRIEFING_HOURS
+
+    /**
+     * In the morning, the first card on the shelf: the top story, with how many are waiting. OK opens the news
+     * screen. Turned off in settings (News → Morning briefing). Read from the saved news, so it's instant.
+     */
+    private fun briefing(): Prog? {
+        if (!prefs.getBoolean("news_morning", true) || !briefingHours()) return null
+        val sections = News.load(this)
+        val top = sections.firstOrNull()?.stories?.firstOrNull() ?: return null
+        if (hideKey(packageName, top.title) in prefs.getStringSet("hidden_watch", emptySet())!!) return null
+        return Prog(top.title, getString(R.string.news_briefing_sub, sections.sumOf { it.stories.size }), 0, null, NEWS_INTENT, packageName)
+    }
+
+    /** The launcher's backdrop, left for the news screen and screensaver to open on (written when Plume is left). */
+    private var savedBackdrop: Bitmap? = null
+
+    private fun saveBackdrop() {
+        val b = backdrop.current ?: return
+        if (b === savedBackdrop) return
+        savedBackdrop = b
+        io.execute {
+            try {
+                val part = File(filesDir, "backdrop.part")
+                part.outputStream().use { b.compress(Bitmap.CompressFormat.JPEG, 88, it) }
+                part.renameTo(backdropFile(this))
+            } catch (e: Exception) {
+            }
+        }
+    }
+
+    private fun pickEdition() {
+        val current = News.edition(prefs).ceid
+        showPage(getString(R.string.news_region), News.EDITIONS.map { e ->
+            page(e.name, if (e.ceid == current) CHOSEN else "") {
+                prefs.edit().putString("news_edition", e.ceid).apply()
+                refreshNews()
+                renderSettings(R.string.news_region)
+            }
+        }, News.EDITIONS.indexOfFirst { it.ceid == current }.coerceAtLeast(0)) { renderSettings(R.string.news_region) }
+    }
+
+    private fun pickTopics() {
+        if (!prefs.contains("news_off")) prefs.edit().putStringSet("news_off", News.DEFAULT_OFF).apply()
+        toggles(getString(R.string.news_topics), News.TOPICS.map { News.sectionName(it, prefs) to it.key }, "news_off",
+            getString(R.string.on), getString(R.string.off)) {
+            refreshNews()
+            renderSettings(R.string.news_topics)
+        }
+    }
+
     private fun navSound(key: Int) = window.decorView.playSoundEffect(when (key) {
         KeyEvent.KEYCODE_DPAD_LEFT -> SoundEffectConstants.NAVIGATION_LEFT
         KeyEvent.KEYCODE_DPAD_RIGHT -> SoundEffectConstants.NAVIGATION_RIGHT
@@ -3126,6 +3248,7 @@ class MainActivity : Activity() {
     }
 
     private fun open(p: Prog) {
+        if (p.intent == NEWS_INTENT) return startActivity(Intent(this, NewsActivity::class.java))
         prefs.edit().putLong("t_${p.pkg}", System.currentTimeMillis()).apply()
         try {
             startActivity(Intent.parseUri(p.intent, Intent.URI_INTENT_SCHEME).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
@@ -3263,6 +3386,8 @@ class MainActivity : Activity() {
         const val DOCK_GAP = 28 // dp; room for the lens between tiles
         const val SHELF_EVERY = 9_000L // Top Shelf turns to the next item this often while it isn't focused
         const val FORK = true
+        const val NEWS_INTENT = "plume:news" // the morning briefing's card on the shelf
+        val BRIEFING_HOURS = 5..10
         const val ALL_APPS_COLUMNS = 6
         const val DRAWER_PAD = 36 // dp inside the All apps sheet
         /** Text over the artwork coloured from the picture (see tintTexts), in groups that share one colour. */
