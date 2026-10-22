@@ -117,8 +117,8 @@
                 android:gravity="end"
                 android:orientation="vertical">
 
-                <!-- iOS lock screen order: the date, then the time, both cut from glass (see GlassClock). -->
-                <dev.plume.GlassClock
+                <!-- iOS lock screen order: the date, then the time; coloured from the artwork (see tintTexts). -->
+                <dev.plume.TintClock
                     android:id="@+id/date"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
@@ -129,7 +129,7 @@
                     android:includeFontPadding="false"
                     android:textSize="19sp" />
 
-                <dev.plume.GlassClock
+                <dev.plume.TintClock
                     android:id="@+id/clock"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
@@ -144,7 +144,7 @@
 
 
                 <!-- "24° Clear · Bengaluru". Off unless turned on in launcher settings. -->
-                <dev.plume.GlassText
+                <dev.plume.TintText
                     android:id="@+id/weather"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
@@ -170,18 +170,17 @@
             android:orientation="vertical"
             android:visibility="gone">
 
-            <dev.plume.GlassText
+            <dev.plume.TintText
                 android:id="@+id/shelfSource"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:alpha="0.75"
                 android:fontFamily="sans-serif-medium"
                 android:letterSpacing="0.15"
                 android:maxLines="1"
                 android:textAllCaps="true"
                 android:textSize="12sp" />
 
-            <dev.plume.GlassText
+            <dev.plume.TintText
                 android:id="@+id/shelfTitle"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -202,12 +201,11 @@
                 android:layout_marginTop="10dp"
                 android:max="100" />
 
-            <dev.plume.GlassText
+            <dev.plume.TintText
                 android:id="@+id/shelfSub"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="6dp"
-                android:alpha="0.9"
                 android:fontFamily="sans-serif"
                 android:maxLines="1"
                 android:textSize="16sp" />

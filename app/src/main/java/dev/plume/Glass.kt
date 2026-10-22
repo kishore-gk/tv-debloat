@@ -34,16 +34,6 @@ import android.widget.FrameLayout
 import android.widget.ImageView
 
 /**
- * Benchmark switches, set from adb (`am start -n dev.plume/.MainActivity --es plume_dbg nokb,noink`), so one
- * feature at a time can be measured: nokb (no slow zoom on the artwork), noink (plain text, no glass text),
- * noglass (flat panels, no picture in the glass).
- */
-internal object Debug {
-    @Volatile var flags: Set<String> = emptySet()
-    fun off(f: String) = f in flags
-}
-
-/**
  * Every animation moves on one S-curve: a gentle start, the travel in the middle, a gentle landing (a cubic
  * ease-in-out). EMPHASIZED and STANDARD are kept as names for where they're used; both are the S-curve.
  */
@@ -123,7 +113,7 @@ class Backdrop(context: Context, attrs: AttributeSet?) : FrameLayout(context, at
                 }
             }
             .start()
-        if (bmp != null && !Debug.off("nokb")) {
+        if (bmp != null) {
             drift[i] = ObjectAnimator.ofPropertyValuesHolder(next,
                 PropertyValuesHolder.ofFloat(View.SCALE_X, 1f, Motion.KEN_BURNS_SCALE),
                 PropertyValuesHolder.ofFloat(View.SCALE_Y, 1f, Motion.KEN_BURNS_SCALE),
@@ -231,11 +221,6 @@ class GlassView(context: Context) : View(context) {
         val sh = shape()
         fill.color = base
         c.drawPath(sh, fill)
-        if (Debug.off("noglass")) {
-            fill.color = 0xB31C1C1E.toInt()
-            c.drawPath(sh, fill)
-            return
-        }
         val root = rootView
         getLocationInWindow(at)
         root.getLocationInWindow(rootAt)
@@ -390,16 +375,6 @@ internal object Glass {
 
     /** The glass edge, drawn over a panel: a hairline rim, brightest along the top where light catches it. */
     fun rim(radius: Float, density: Float): Drawable = RimDrawable(radius, density, 0x47FFFFFF, 0x14FFFFFF)
-
-    /**
-     * A small glass pill (buttons on the picture): dark smoked glass with a light rim at rest, so it shows on bright
-     * and dark pictures alike; solid white when lit.
-     */
-    fun chip(radius: Float, lit: Boolean): Drawable = GradientDrawable().apply {
-        cornerRadius = radius
-        setColor(if (lit) 0xFFF5F5F7.toInt() else 0x59000000)
-        if (!lit) setStroke(1, 0x66FFFFFF)
-    }
 }
 
 /** A hairline glass rim on continuous corners: [top] colour along the top edge fading to [bottom] at the bottom. */
@@ -543,171 +518,67 @@ class SheenDrawable(private val radius: Float, private val density: Float) : Dra
 }
 
 /**
- * Lock-screen glass text (iOS 26): letters cut out of frosted glass. Each glyph shows the blurred picture behind
- * it, brightened, with light catching its top edge; no flat white fill. Shared by the clock, date and weather.
- * [source] is the same small copy of the backdrop the dock's glass uses; scaled up, it is already soft.
+ * Text over the artwork in a colour taken from the picture behind it (see [tintFor]). Never drawn through an
+ * offscreen layer when it fades, so its shadow isn't cropped to a box.
  */
-class GlassInk(private val view: android.widget.TextView) {
-    var source: Bitmap? = null
-        set(v) { field = v; view.invalidate() }
-
-    /** How solid the frost is, 0..1: small text needs more to stay readable than the big time. */
-    var frostiness = 0.5f
-        set(v) { field = v; view.invalidate() }
-
-    var edge = 1.4f * view.resources.displayMetrics.density
-
-    /** Draw the layered shadow under the glass (see [shadow]). */
-    var shadows = true
-
-    private val d = view.resources.displayMetrics.density
-    private val pic = Paint(Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG).apply {
-        xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.SRC_IN)
-        colorFilter = ColorMatrixColorFilter(ColorMatrix().apply { setSaturation(1.6f) })
-    }
-    private val frost = Paint().apply {
-        xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.SRC_ATOP)
-    }
-    private val cut = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.DST_OUT)
-    private val m = Matrix()
-    private val at = IntArray(2)
-    private val rootAt = IntArray(2)
-    private val bright = Ease(view)
-
-    fun draw(c: Canvas, text: (Canvas) -> Unit) {
-        if (Debug.off("noink")) return text(c)
-        val v = view
-        val p = v.paint
-        val w = v.width.toFloat()
-        val h = v.height.toFloat()
-        val b = source
-        v.getLocationInWindow(at)
-        v.rootView.getLocationInWindow(rootAt)
-        // 0 on dark pictures, 1 on bright ones: white frost turns to smoked glass, like iOS text on a bright wallpaper.
-        val t = if (b == null) 0f else bright.to(brightness(backdropLuminance(b, v, at, rootAt)))
-        val savedColor = p.color
-        p.style = Paint.Style.FILL
-        if (shadows) shadow(c, text, t)
-        // 1. The glyphs as a mask, then the blurred picture inside them, frosted.
-        val layer = c.saveLayer(0f, 0f, w, h, null)
-        text(c)
-        if (b != null) {
-            val root = v.rootView
-            val s = maxOf(root.width.toFloat() / b.width, root.height.toFloat() / b.height)
-            m.setScale(s, s)
-            m.postTranslate((root.width - b.width * s) / 2f - (at[0] - rootAt[0]) + v.scrollX, (root.height - b.height * s) / 2f - (at[1] - rootAt[1]) + v.scrollY)
-            c.drawBitmap(b, m, pic)
-        }
-        val light = if (b == null) 0.95f else 0.3f + frostiness * 0.5f
-        val lightLow = if (b == null) 0.85f else 0.15f + frostiness * 0.5f
-        val top = mix(Color.argb((light * 255).toInt(), 255, 255, 255), Color.argb(((0.62f + frostiness * 0.2f) * 255).toInt(), 0x1C, 0x1C, 0x1E), t)
-        val bottom = mix(Color.argb((lightLow * 255).toInt(), 255, 255, 255), Color.argb(((0.72f + frostiness * 0.2f) * 255).toInt(), 0x1C, 0x1C, 0x1E), t)
-        frost.shader = LinearGradient(0f, v.paddingTop.toFloat(), 0f, h - v.paddingBottom, top, bottom, Shader.TileMode.CLAMP)
-        c.drawPaint(frost)
-        c.restoreToCount(layer)
-        // 2. Light catching the top of each glyph: the glyph minus itself nudged down. Not a stroke: font outlines
-        //    overlap inside some characters (4, 9), and a stroke would trace those as lines.
-        val lit = c.saveLayer(0f, 0f, w, h, null)
-        p.shader = LinearGradient(0f, v.paddingTop.toFloat(), 0f, h - v.paddingBottom, Color.argb((0xF2 - 0x80 * t).toInt(), 255, 255, 255),
-            Color.argb((0x59 - 0x30 * t).toInt(), 255, 255, 255), Shader.TileMode.CLAMP)
-        text(c)
-        p.shader = null
-        p.xfermode = cut
-        c.translate(0f, edge)
-        text(c)
-        c.translate(0f, -edge)
-        p.xfermode = null
-        c.restoreToCount(lit)
-        p.color = savedColor
-    }
-
-    /**
-     * Layered (compound) shadow: four soft shadows stacked from tight and close to wide and far, each faint, the
-     * way depth is built in iOS and neumorphic design, instead of one blur. Sized to the text. Drawn alone: the
-     * letters are cut back out, so only the shadow stays under the glass. Lighter on bright pictures, where the
-     * smoked glass already stands out.
-     */
-    private fun shadow(c: Canvas, text: (Canvas) -> Unit, t: Float) {
-        val k = (v().textSize / (40f * d)).coerceIn(0.45f, 1.6f) * d
-        val strength = 1f - 0.6f * t
-        val layer = c.saveLayer(0f, 0f, view.width.toFloat(), view.height.toFloat(), null)
-        val p = view.paint
-        p.color = 0xFF000000.toInt()
-        for ((r, dy, a) in LAYERS) {
-            p.setShadowLayer(r * k, 0f, dy * k, Color.argb((a * strength * 255).toInt(), 0, 0, 0))
-            text(c)
-        }
-        p.clearShadowLayer()
-        p.xfermode = cut
-        text(c)
-        p.xfermode = null
-        c.restoreToCount(layer)
-    }
-
-    private fun v() = view
-
-    /** How far the widest shadow reaches past the letters, in px: the room [cacheWithShadow] gives the view. */
-    fun shadowReach(): Int {
-        val k = (view.textSize / (40f * d)).coerceIn(0.45f, 1.6f) * d
-        return LAYERS.maxOf { (r, dy, _) -> r + dy }.let { (it * k).toInt() + 2 }
-    }
-
-    /**
-     * Glass text is costly to draw (four blurred shadows, the frosted picture, the lit edge), and Android redraws
-     * every view on screen whenever anything moves. So it is drawn once into its own GPU layer and reused until
-     * the text or picture changes. The layer is the view's size, so the view gets padding as deep as its shadow
-     * (with matching negative margins, so nothing moves).
-     */
-    fun cacheWithShadow() {
-        val pad = shadowReach()
-        view.setPadding(view.paddingLeft + pad, view.paddingTop + pad, view.paddingRight + pad, view.paddingBottom + pad)
-        (view.layoutParams as? android.view.ViewGroup.MarginLayoutParams)?.apply {
-            val start = marginStart // read both first: setting one relative margin changes how the other resolves
-            val end = marginEnd
-            marginStart = start - pad
-            marginEnd = end - pad
-            topMargin -= pad
-            bottomMargin -= pad
-        }
-        view.setLayerType(View.LAYER_TYPE_HARDWARE, null)
-    }
-
-    private fun mix(a: Int, b: Int, t: Float) = Color.argb(
-        (Color.alpha(a) + (Color.alpha(b) - Color.alpha(a)) * t).toInt(),
-        (Color.red(a) + (Color.red(b) - Color.red(a)) * t).toInt(),
-        (Color.green(a) + (Color.green(b) - Color.green(a)) * t).toInt(),
-        (Color.blue(a) + (Color.blue(b) - Color.blue(a)) * t).toInt(),
-    )
-
-    private companion object {
-        /** (blur radius, drop, opacity) per shadow layer, in dp at 40 sp text. */
-        val LAYERS = listOf(Triple(1.5f, 1f, 0.24f), Triple(4f, 2f, 0.18f), Triple(9f, 4.5f, 0.13f), Triple(18f, 8f, 0.10f))
-    }
-}
-
-/**
- * TextView clips its drawing to the text box, widened only by the shadow set on the view itself. The layered
- * shadow is drawn on the paint directly, so register an invisible shadow as wide as the widest layer.
- */
-internal fun roomForShadow(v: android.widget.TextView) {
-    val d = v.resources.displayMetrics.density
-    v.setShadowLayer(40f * d, 0f, 16f * d, 0)
-}
-
-/** The clock and date in glass (see [GlassInk]). */
-class GlassClock(context: Context, attrs: AttributeSet?) : android.widget.TextClock(context, attrs) {
-    val ink = GlassInk(this)
-    init { roomForShadow(this) }
-    override fun onDraw(c: Canvas) = ink.draw(c) { super.onDraw(it) }
+class TintText(context: Context, attrs: AttributeSet?) : android.widget.TextView(context, attrs) {
     override fun hasOverlappingRendering() = false
 }
 
-/** Any line of text in glass (see [GlassInk]): the weather. */
-class GlassText(context: Context, attrs: AttributeSet?) : android.widget.TextView(context, attrs) {
-    val ink = GlassInk(this)
-    init { roomForShadow(this) }
-    override fun onDraw(c: Canvas) = ink.draw(c) { super.onDraw(it) }
-    override fun hasOverlappingRendering() = false // fading it must not crop its shadow to a box
+/** The clock and date, tinted like [TintText]. */
+class TintClock(context: Context, attrs: AttributeSet?) : android.widget.TextClock(context, attrs) {
+    override fun hasOverlappingRendering() = false
+}
+
+/** Average colour of the backdrop behind [v], from the small backdrop copy [b], on the same grid as [backdropLuminance]. */
+internal fun backdropColor(b: Bitmap, v: View, at: IntArray, rootAt: IntArray): Int {
+    val root = v.rootView
+    if (root.width == 0 || v.width == 0) return Color.BLACK
+    val s = maxOf(root.width.toFloat() / b.width, root.height.toFloat() / b.height)
+    val ox = (root.width - b.width * s) / 2f
+    val oy = (root.height - b.height * s) / 2f
+    var r = 0; var g = 0; var bl = 0; var n = 0
+    for (i in 0 until 8) for (j in 0 until 4) {
+        val sx = at[0] - rootAt[0] + v.width * (i + 0.5f) / 8f
+        val sy = at[1] - rootAt[1] + v.height * (j + 0.5f) / 4f
+        val c = b.getPixel(((sx - ox) / s).toInt().coerceIn(0, b.width - 1), ((sy - oy) / s).toInt().coerceIn(0, b.height - 1))
+        r += Color.red(c); g += Color.green(c); bl += Color.blue(c); n++
+    }
+    return Color.rgb(r / n, g / n, bl / n)
+}
+
+/** WCAG relative luminance of an sRGB colour, 0..1. */
+internal fun relativeLuminance(c: Int): Double {
+    fun lin(x: Int): Double { val v = x / 255.0; return if (v <= 0.03928) v / 12.92 else Math.pow((v + 0.055) / 1.055, 2.4) }
+    return 0.2126 * lin(Color.red(c)) + 0.7152 * lin(Color.green(c)) + 0.0722 * lin(Color.blue(c))
+}
+
+internal fun contrast(a: Int, b: Int): Double {
+    val la = relativeLuminance(a)
+    val lb = relativeLuminance(b)
+    return (maxOf(la, lb) + 0.05) / (minOf(la, lb) + 0.05)
+}
+
+/**
+ * Text colour for a background: the background's own hue (so the text belongs to the picture, as on Apple TV),
+ * pushed to the opposite brightness: a pale tint on dark pictures, a deep shade on bright ones. If that tint
+ * doesn't reach 4.5:1 contrast (WCAG AA), it is pushed further until it does, ending at near-white or near-black.
+ */
+internal fun tintFor(bg: Int): Int {
+    val hsv = FloatArray(3)
+    Color.colorToHSV(bg, hsv)
+    val lightText = contrast(Color.WHITE, bg) >= contrast(0xFF101010.toInt(), bg)
+    var sat = if (lightText) minOf(hsv[1], 0.16f) else minOf(hsv[1] * 0.9f, 0.5f)
+    var value = if (lightText) 0.98f else 0.24f
+    var c = Color.HSVToColor(floatArrayOf(hsv[0], sat, value))
+    var step = 0
+    while (contrast(c, bg) < 4.5 && step < 12) {
+        sat *= 0.7f
+        value = if (lightText) minOf(1f, value + 0.01f) else maxOf(0.04f, value - 0.04f)
+        c = Color.HSVToColor(floatArrayOf(hsv[0], sat, value))
+        step++
+    }
+    return c
 }
 
 /**

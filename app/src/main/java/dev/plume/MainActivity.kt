@@ -232,8 +232,6 @@ class MainActivity : Activity() {
     private var dark = false
     private var fg = Color.BLACK
     private var ground = Color.WHITE
-    private var cardRest = intArrayOf(Color.WHITE, Color.WHITE)
-    private var cardLit = cardRest
 
     private lateinit var appRow: LinearLayout
     private lateinit var backdrop: Backdrop
@@ -242,9 +240,9 @@ class MainActivity : Activity() {
     private lateinit var dock: FrameLayout
     private lateinit var lens: FocusLens
     private lateinit var topGlass: GlassView
-    private lateinit var clock: GlassClock
-    private lateinit var date: GlassClock
-    private lateinit var weather: GlassText
+    private var tintSource: Bitmap? = null // the small backdrop copy the text colours are taken from
+    private val tintAnims = HashMap<View, ValueAnimator>()
+    private lateinit var drawerGlass: GlassView
     private lateinit var playButtonGlass: GlassView
     private lateinit var sheetGlass: GlassView
     private var dockOpen = -1f // 0 compact, 1 open (lens and name room); -1 not laid out yet
@@ -270,7 +268,6 @@ class MainActivity : Activity() {
     private val packageReceiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) {
             appsDirty = true
-            i.data?.schemeSpecificPart?.let { GLYPHS.remove(it); ACCENTS.remove(it) } // an update may bring a new icon
         }
     }
 
@@ -290,7 +287,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
-        readDebug(intent)
+        prefs.edit().remove("dbg").apply() // left over from the benchmark switches
         // The backdrop covers the whole window: no window background painted under it on every frame.
         window.setBackgroundDrawable(null)
         setContentView(R.layout.activity_main)
@@ -707,7 +704,6 @@ class MainActivity : Activity() {
     /** Home pressed while already home: close whatever is open and go back to the start of the apps row. */
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        if (readDebug(intent)) return recreate()
         if (intent.action == UPDATE_STATUS) return installStatus(intent)
         if (homeTest != 0 && intent.hasCategory(Intent.CATEGORY_HOME)) { // the Home press reached us: setup works
             homeTest = 0
@@ -734,14 +730,9 @@ class MainActivity : Activity() {
     private fun applyTheme() {
         dark = wantDark()
         fg = if (dark) DARK_TEXT else 0xFF111214.toInt()
-        // Dark cards are rimCard()s on true black. Light cards are frosted grey glass, so they still read on
-        // white wallpapers; focus turns them white.
-        cardRest = if (dark) DARK_CARD else intArrayOf(0xD9E2E5E9.toInt(), 0xD9D8DCE1.toInt())
-        cardLit = if (dark) DARK_CARD_LIT else intArrayOf(Color.WHITE, Color.WHITE)
         // Must match the colour each wallpaper fades into, or the bottom edge shows a seam.
         ground = if (dark) DARK_BG else 0xFFF3F5F7.toInt()
         findViewById<View>(R.id.root).background = null // the backdrop paints black itself when it has no picture
-        allApps.setBackgroundColor(ground)
         for (id in intArrayOf(R.id.clock, R.id.date, R.id.appsTitle, R.id.shelfSource, R.id.shelfTitle, R.id.shelfSub, R.id.allAppsTitle, R.id.rowLabel, R.id.weather)) {
             findViewById<TextView>(id).setTextColor(fg)
         }
@@ -1590,175 +1581,15 @@ class MainActivity : Activity() {
     /** Each app's own shipped icon instead of the mono mark, in the row and All apps. */
     private fun colourIcons() = prefs.getBoolean("colour_icons", false)
 
-    /** The home row shows marks only by default (see rowNames); the All apps grid always labels them. */
-    private fun appTile(a: App, labeled: Boolean = true): View {
-        val logo = LOGOS[a.pkg]
-        val custom = customIcon(a.pkg)
-        val name = a.label.takeIf { labeled }
-        // Colour mode keeps the same marks, tinted with the brand colour (or the colour the app's icon is mostly).
-        val colour = colourIcons()
-        val t = when {
-            custom != null -> tile(name, custom, false, a.pkg) { launch(a) }
-            a.pkg.startsWith(HDMI) -> tile(name, a.icon, true, a.pkg,
-                tint = BRAND_COLOURS[hdmiIcon(a.label, true)]?.takeIf { colour }) { launch(a) }
-            logo != null -> tile(name.takeIf { !logo.second }, getDrawable(logo.first)!!, true, a.pkg,
-                wordmarkInset = if (!logo.second) null else dp(if (labeled) 28 else 14),
-                tint = BRAND_COLOURS[a.pkg]?.takeIf { colour }) { launch(a) }
-            else -> cachedGlyph(a)?.let { tile(name, it, true, a.pkg, tint = if (colour) cachedAccent(a) else null) { launch(a) } }
-                ?: if (colour) tile(name, a.icon.constantState?.newDrawable(resources) ?: a.icon, false, a.pkg) { launch(a) }
-                // A copy: greying the shared icon itself would keep it grey after switching to colour.
-                else tile(name, (a.icon.constantState?.newDrawable(resources) ?: a.icon).mutate().apply { colorFilter = GREYSCALE }, false, a.pkg) { launch(a) }
-        }
-        t.contentDescription = a.label
-        return t
-    }
-
-    /** "App names: Always": a name under every tile, same width and gap as the tiles, so they line up. */
+    /** The glass dock shows logos only: no name line under the tiles. */
     private fun showNames() {
-        val row = findViewById<LinearLayout>(R.id.nameRow)
-        val always = false // the glass dock shows logos only
-        row.visibility = if (always) View.VISIBLE else View.GONE
+        findViewById<View>(R.id.nameRow).visibility = View.GONE
         findViewById<View>(R.id.rowLabel).visibility = View.GONE
-        row.removeAllViews()
-        if (!always) return
-        for (i in 0 until appRow.childCount) {
-            val t = appRow.getChildAt(i)
-            row.addView(label(t.contentDescription.toString(), 13f).apply {
-                gravity = Gravity.CENTER
-                alpha = if (dark) 0.85f else 1f
-            }, LinearLayout.LayoutParams(t.layoutParams as LinearLayout.LayoutParams).apply { height = MATCH_PARENT })
-        }
     }
 
-    /** Slides the shared name label under the focused row tile; fades it out once focus leaves the row. */
-    private fun showRowLabel(v: View, focused: Boolean) {
-        val label = findViewById<TextView>(R.id.rowLabel)
-        if (focused && !editing && rowNames() == "focus") {
-            // Name and place change together, or moving quickly shows the next name under the previous tile for a frame.
-            // Posted only on first render, when focus lands before layout and every width is still 0. A post that runs
-            // after focus moved on is skipped, or it would show this old name while a newer tile is selected.
-            val place = {
-                label.text = v.contentDescription
-                label.translationX = v.left + v.width / 2f - label.width / 2f
-            }
-            if (v.width > 0 && label.width > 0) place() else v.post { if (v.isFocused) place() }
-            label.animate().alpha(if (dark) 0.85f else 1f).setDuration(160).start()
-        } else {
-            ui.post { if (currentFocus?.parent !== appRow || editing) label.animate().alpha(0f).setDuration(120).start() }
-        }
-    }
-
-    /** White card: logo on top, name underneath. With no label the mark sits alone, centred, at one size. */
-    private fun tile(label: String?, icon: Drawable, mono: Boolean, tag: String, wordmarkInset: Int? = null, tint: Int? = null, onClick: () -> Unit): View {
-        val col = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-        }
-        val img = ImageView(this).apply {
-            setImageDrawable(icon.mutate())
-            scaleType = ImageView.ScaleType.FIT_CENTER
-            if (mono) setColorFilter(tint ?: fg)
-        }
-        val text = label?.let {
-            label(it, 13f).apply {
-                gravity = Gravity.CENTER
-                setPadding(dp(6), dp(7), dp(6), 0)
-            }
-        }
-        // Same card as light mode; in dark the marks rest slightly dimmed and brighten with focus.
-        val restLogo = if (dark) 0.8f else 1f
-        val restText = if (dark) 0.65f else 1f
-        img.alpha = restLogo
-        text?.alpha = restText
-        style(col, dp(8), card = true) { focused ->
-            if (!dark) return@style
-            img.animate().alpha(if (focused) 1f else restLogo).setDuration(160).start()
-            text?.animate()?.alpha(if (focused) 1f else restText)?.setDuration(160)?.start()
-        }
-        if (text == null) {
-            // Icons share one height. Wordmarks sit in a square viewport, so fit them by width instead
-            // (crop the empty top and bottom) or they shrink to a sliver.
-            if (wordmarkInset != null) {
-                img.scaleType = ImageView.ScaleType.CENTER_CROP
-                img.setPadding(wordmarkInset, 0, wordmarkInset, 0)
-            } else {
-                img.setPadding(dp(16), dp(20), dp(16), dp(20))
-            }
-            col.addView(img, LinearLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
-        } else {
-            col.addView(img, LinearLayout.LayoutParams(MATCH_PARENT, dp(26)))
-            col.addView(text, LinearLayout.LayoutParams(MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT))
-        }
-        col.tag = tag
-        col.setOnClickListener { onClick() }
-        return col
-    }
-
-    /**
-     * A mono mark from an adaptive icon's foreground layer (its symbol, without the coloured backplate),
-     * cropped to the safe zone. Brightness becomes opacity: the light symbol becomes the mark, and dark
-     * details in it (a note inside a circle) become holes, so the mono tint keeps them. Null for old
-     * single-layer icons and for photo-like layers that fill the square, which keep the greyscale look.
-     */
-    private fun glyph(icon: Drawable): Bitmap? {
-        val fg = (icon as? AdaptiveIconDrawable)?.foreground ?: return null
-        val size = dp(96) // large, so a small symbol is still sharp after trimming and scaling up
-        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-        // Layers are 108dp with the symbol inside the middle 72dp; drawing at 1.5x crops to that.
-        fg.setBounds(-size / 4, -size / 4, size * 5 / 4, size * 5 / 4)
-        fg.draw(Canvas(bmp))
-        val px = IntArray(size * size)
-        bmp.getPixels(px, 0, size, 0, 0, size, size)
-        if (px.count { Color.alpha(it) > 200 } > px.size * 0.7) return null // a picture, not a symbol
-        val alpha = FloatArray(px.size) { i ->
-            val c = px[i]
-            Color.alpha(c) * (0.2126f * Color.red(c) + 0.7152f * Color.green(c) + 0.0722f * Color.blue(c)) / 255f
-        }
-        val peak = alpha.max().takeIf { it > 0f } ?: return null
-        // Stretch so the brightest part is fully opaque: an orange symbol shouldn't look dimmer than a white one.
-        for (i in px.indices) px[i] = Color.argb((alpha[i] * 255f / peak).toInt().coerceAtMost(255), 255, 255, 255)
-        bmp.setPixels(px, 0, size, 0, 0, size, size)
-        // Trim to the visible mark (as a square, centred), so small symbols fill the tile like the logos do.
-        val on = px.indices.filter { Color.alpha(px[it]) > 40 }.ifEmpty { return null }
-        val l = on.minOf { it % size }; val r = on.maxOf { it % size }
-        val t = on.minOf { it / size }; val b = on.maxOf { it / size }
-        val side = maxOf(r - l, b - t) + 1
-        val x = ((l + r + 1 - side) / 2).coerceIn(0, size - side)
-        val y = ((t + b + 1 - side) / 2).coerceIn(0, size - side)
-        return Bitmap.createBitmap(bmp, x, y, side, side)
-    }
-
-    /** glyph() walks every pixel, too slow to redo on each row rebuild; kept per app until the app changes. */
-    private fun cachedGlyph(a: App): Drawable? {
-        val bmp = if (a.pkg in GLYPHS) GLYPHS[a.pkg] else glyph(a.icon).also { GLYPHS[a.pkg] = it }
-        return bmp?.let { BitmapDrawable(resources, it) }
-    }
-
-    /**
-     * The colour an icon is mostly, for tinting its mark: the biggest hue among its vivid pixels (backplate
-     * included, which is where most apps keep their colour). Null if it's all greys, or too close to the
-     * card colour to read on it; the mark then stays the theme's mono colour.
-     */
-    private fun accent(icon: Drawable): Int? {
-        val size = 32
-        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-        icon.constantState?.newDrawable(resources)?.apply { setBounds(0, 0, size, size) }?.draw(Canvas(bmp)) ?: return null
-        val px = IntArray(size * size).also { bmp.getPixels(it, 0, size, 0, 0, size, size) }
-        bmp.recycle()
-        val hsv = FloatArray(3)
-        val buckets = px.filter { Color.alpha(it) > 200 }
-            .filter { Color.colorToHSV(it, hsv); hsv[1] > 0.35f && hsv[2] > 0.3f }
-            .groupBy { Color.colorToHSV(it, hsv); (hsv[0] / 30).toInt() } // 12 hue buckets
-        val top = buckets.values.maxByOrNull { it.size }?.takeIf { it.size > px.size / 20 } ?: return null
-        return Color.rgb(top.sumOf { Color.red(it) } / top.size, top.sumOf { Color.green(it) } / top.size, top.sumOf { Color.blue(it) } / top.size)
-    }
-
-    /** accent() per app, kept like GLYPHS; the contrast check is per theme, so it runs on every use. */
-    private fun cachedAccent(a: App): Int? {
-        val c = if (a.pkg in ACCENTS) ACCENTS[a.pkg] else accent(a.icon).also { ACCENTS[a.pkg] = it }
-        val lum = c?.let { Color.luminance(it) } ?: return null
-        return c.takeIf { if (dark) lum > 0.08f else lum < 0.6f }
-    }
+    /** Kept for the editing flow, which calls it; the dock has no name label to show. */
+    @Suppress("UNUSED_PARAMETER")
+    private fun showRowLabel(v: View, focused: Boolean) {}
 
     /** Optional per-theme icons: assets/icons/<package>_dark.png, <package>_light.png, or <package>.png. */
     private fun customIcon(pkg: String): Drawable? =
@@ -1775,7 +1606,7 @@ class MainActivity : Activity() {
     /**
      * Hold detection lives here, not in View long-click: this TV's remote doesn't reliably trigger the
      * framework's long-press timer. We treat the first auto-repeat of OK as "held"; the long-click
-     * listener in style() is a fallback for remotes that send no repeats. [holdFired] stops both firing.
+     * listener on each tile (focusLift) is a fallback for remotes that send no repeats. [holdFired] stops both firing.
      */
     override fun dispatchKeyEvent(e: KeyEvent): Boolean {
         if (e.action == KeyEvent.ACTION_DOWN) {
@@ -2066,28 +1897,87 @@ class MainActivity : Activity() {
 
     // ---------- all apps ----------
 
+    /**
+     * All apps as a frosted glass sheet over the artwork, like the settings sheet: the same squircle banner tiles
+     * and light sweep as the dock, six across, each with its name underneath. Holding OK on one pins it to the
+     * front of the dock (see onHold).
+     */
     private fun openAllApps() {
         allAppsGrid.removeAllViews()
-        val gap = dp(10)
-        val width = (resources.displayMetrics.widthPixels - dp(SCREEN_PAD) * 2 - gap * 5) / 6
+        val gap = dp(26)
+        val inner = resources.displayMetrics.widthPixels - dp(SCREEN_PAD) * 2 - dp(DRAWER_PAD) * 2
+        val w = inner / ALL_APPS_COLUMNS - gap
+        val h = w * 9 / 16
         for (a in sortedApps()) {
-            val t = appTile(a) // holding OK here pins it to the row (see onHold)
-            allAppsGrid.addView(t, GridLayout.LayoutParams().apply {
-                this.width = width
-                height = dp(76)
-                setMargins(0, 0, gap, gap)
+            val tile = dockTile(a, h * 0.24f)
+            val name = label(a.label, 13f).apply {
+                gravity = Gravity.CENTER
+                alpha = 0.6f
+                setPadding(0, dp(10), 0, 0)
+                setShadowLayer(dpf(6f), 0f, dpf(1f), 0x66000000)
+            }
+            val own = tile.onFocusChangeListener
+            tile.setOnFocusChangeListener { v, focused ->
+                own.onFocusChange(v, focused)
+                name.animate().alpha(if (focused) 1f else 0.6f).setDuration(Motion.FOCUS_MS).setInterpolator(Motion.S).start()
+            }
+            val cell = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                clipChildren = false
+                clipToPadding = false
+                addView(tile, LinearLayout.LayoutParams(w, h))
+                addView(name, LinearLayout.LayoutParams(w, LinearLayout.LayoutParams.WRAP_CONTENT))
+            }
+            allAppsGrid.addView(cell, GridLayout.LayoutParams().apply {
+                width = w
+                setMargins(gap / 2, 0, gap / 2, gap)
             })
         }
         allApps.visibility = View.VISIBLE
+        allApps.alpha = 0f
+        allApps.scaleX = 0.97f
+        allApps.scaleY = 0.97f
+        allApps.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(380).setInterpolator(Motion.S).start()
         homeFocusable(false)
-        allAppsGrid.getChildAt(0)?.requestFocus()
+        (allAppsGrid.getChildAt(0) as? ViewGroup)?.getChildAt(0)?.requestFocus()
     }
 
     private fun closeAllApps() {
-        allApps.visibility = View.GONE
+        val sheet = allApps
+        sheet.animate().alpha(0f).scaleX(0.97f).scaleY(0.97f).setDuration(240).setInterpolator(Motion.S)
+            .withEndAction { sheet.visibility = View.GONE }.start()
         homeFocusable(true)
         renderApps()
         findViewById<View>(R.id.allAppsButton).requestFocus() // back where it was opened from
+    }
+
+    /** Moves the All apps list onto a frosted glass sheet with the dock's rim, inset from the screen edges. */
+    private fun setupDrawer() {
+        val root = findViewById<FrameLayout>(R.id.root)
+        val list = findViewById<View>(R.id.allApps)
+        val at = root.indexOfChild(list)
+        root.removeView(list)
+        val radius = dpf(32f)
+        val sheet = FrameLayout(this)
+        drawerGlass = GlassView(this).apply { tint = 0x8C101014.toInt(); corner = radius }
+        sheet.addView(drawerGlass, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        list.background = null
+        list.visibility = View.VISIBLE
+        list.setPadding(dp(DRAWER_PAD), dp(28), dp(DRAWER_PAD), dp(28))
+        sheet.addView(list, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        sheet.foreground = Glass.rim(radius, resources.displayMetrics.density)
+        sheet.visibility = View.GONE
+        root.addView(sheet, at, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT).apply {
+            setMargins(dp(SCREEN_PAD), dp(SCREEN_PAD), dp(SCREEN_PAD), dp(SCREEN_PAD))
+        })
+        allApps = sheet
+        findViewById<TextView>(R.id.allAppsTitle).apply {
+            typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+            textSize = 24f
+            setTextColor(DARK_TEXT)
+            setPadding(dp(13), 0, 0, dp(10))
+        }
+        (allAppsGrid.layoutParams as LinearLayout.LayoutParams).gravity = Gravity.CENTER_HORIZONTAL
     }
 
     // ---------- screensaver ----------
@@ -2706,26 +2596,7 @@ class MainActivity : Activity() {
             setColor(0)
             setStroke(maxOf(1, dp(1)), 0x38FFFFFF)
         }
-        clock = findViewById(R.id.clock)
-        date = findViewById<GlassClock>(R.id.date).apply {
-            ink.frostiness = 0.9f
-            ink.edge = 0.8f * resources.displayMetrics.density
-        }
-        for ((id, f) in listOf(R.id.shelfSource to 0.9f, R.id.shelfTitle to 0.75f, R.id.shelfSub to 0.9f)) {
-            findViewById<GlassText>(id).ink.apply {
-                frostiness = f
-                edge = (if (id == R.id.shelfTitle) 1.1f else 0.7f) * resources.displayMetrics.density
-            }
-        }
-        weather = findViewById<GlassText>(R.id.weather).apply {
-            ink.frostiness = 0.85f
-            ink.edge = 0.8f * resources.displayMetrics.density
-        }
-        // Each glass text drawn once into its own cached layer (see GlassInk.cacheWithShadow).
-        clock.ink.cacheWithShadow()
-        date.ink.cacheWithShadow()
-        weather.ink.cacheWithShadow()
-        for (id in intArrayOf(R.id.shelfSource, R.id.shelfTitle, R.id.shelfSub)) findViewById<GlassText>(id).ink.cacheWithShadow()
+        setupDrawer()
         // The shelf stands on the resting dock: its Resume row stays put while the title above grows or shrinks.
         (shelf.layoutParams as FrameLayout.LayoutParams).bottomMargin = dockRestHeight() + dp(SHELF_GAP)
         val playGlass = findViewById<FrameLayout>(R.id.playGlass)
@@ -2744,13 +2615,8 @@ class MainActivity : Activity() {
         styleShelf(false)
     }
 
-    /**
-     * iOS-style shadows instead of a vignette: wide, soft and low-opacity under text, so it reads on bright
-     * pictures without a dark band; small lifts under the button, bar and dots.
-     */
+    /** A small lift under the progress bar, so it reads on bright pictures too. */
     private fun softShadows() {
-        val big = dpf(14f)
-        val small = dpf(8f)
         findViewById<View>(R.id.shelfProgress).elevation = dpf(2f)
     }
 
@@ -2795,7 +2661,7 @@ class MainActivity : Activity() {
         val sub = findViewById<TextView>(R.id.shelfSub)
         val bar = findViewById<ProgressBar>(R.id.shelfProgress)
         val parts = listOf(src, title, sub, bar)
-        val rest = mapOf<View, Float>(src to 0.75f, title to 1f, sub to 0.9f, bar to 1f)
+        val rest = mapOf<View, Float>(src to 1f, title to 1f, sub to 1f, bar to 1f) // softer lines get it from their colour (TINTED)
         val fill = { glideShelfHeight {
             src.text = apps.firstOrNull { it.pkg == p.pkg }?.label.orEmpty()
             title.text = p.title
@@ -2806,6 +2672,7 @@ class MainActivity : Activity() {
             shelf.contentDescription = p.title
             shelf.setTag(R.id.shelf, p) // holding OK hides it (see onHold)
             showDots()
+            ui.post { tintTexts() }
         } }
         val swap = ++shelfSwap
         if (dir == 0) {
@@ -2887,10 +2754,42 @@ class MainActivity : Activity() {
         topGlass.show(small)
         playButtonGlass.show(small)
         sheetGlass.show(small)
-        clock.ink.source = small
-        date.ink.source = small
-        weather.ink.source = small
-        for (id in intArrayOf(R.id.shelfSource, R.id.shelfTitle, R.id.shelfSub)) findViewById<GlassText>(id).ink.source = small
+        drawerGlass.show(small)
+        tintSource = small
+        ui.post { tintTexts() } // after layout, so each text knows where it sits
+    }
+
+    /**
+     * Colours each line of text over the artwork from the picture right behind it (see tintFor): a pale tint of the
+     * picture's colour on dark artwork, a deep shade on bright artwork, always at least 4.5:1 contrast. Eases to
+     * the new colour on the S-curve when the artwork changes. A soft shadow (light text) or glow (dark text)
+     * keeps edges clean on busy pictures.
+     */
+    private fun tintTexts() {
+        val small = tintSource
+        val at = IntArray(2)
+        val rootAt = IntArray(2)
+        for ((id, alpha) in TINTED) {
+            val v = findViewById<TextView>(id) ?: continue
+            if (v.visibility != View.VISIBLE || v.width == 0) continue
+            val bg = if (small == null) Color.BLACK else {
+                v.getLocationInWindow(at)
+                v.rootView.getLocationInWindow(rootAt)
+                backdropColor(small, v, at, rootAt)
+            }
+            val ink = tintFor(bg)
+            val target = Color.argb((alpha * 255).toInt(), Color.red(ink), Color.green(ink), Color.blue(ink))
+            val light = relativeLuminance(ink) > 0.5
+            v.setShadowLayer(dpf(8f), 0f, dpf(1f), if (light) 0x59000000 else 0x40FFFFFF)
+            tintAnims[v]?.cancel()
+            if (v.currentTextColor == target) continue
+            tintAnims[v] = ValueAnimator.ofArgb(v.currentTextColor, target).apply {
+                duration = 600
+                interpolator = Motion.S
+                addUpdateListener { v.setTextColor(it.animatedValue as Int) }
+                start()
+            }
+        }
     }
 
     private fun loadHero(p: Prog) {
@@ -2973,13 +2872,13 @@ class MainActivity : Activity() {
      * Dock tile, tvOS style: the app's own Android TV banner (full colour, 16:9), or its logo on a glass tile
      * when it has none (HDMI inputs, phone apps). Lifts, tilts in and catches a sheen of light on focus.
      */
-    private fun dockTile(a: App): View {
+    private fun dockTile(a: App, radius: Float = tileRadius()): View {
         val frame = FrameLayout(this)
         val img = ImageView(this)
         val art = customIcon(a.pkg) ?: a.banner?.let { it.constantState?.newDrawable(resources) ?: it }
         if (art != null) {
             // Artwork painted into the squircle itself: no clipping needed (see TileArt).
-            frame.background = TileArt(art, tileRadius(), 0xFF1C1C1E.toInt())
+            frame.background = TileArt(art, radius, 0xFF1C1C1E.toInt())
         } else {
             val logo = LOGOS[a.pkg]
             val mark = when {
@@ -2989,10 +2888,10 @@ class MainActivity : Activity() {
             }
             img.setImageDrawable(mark)
             img.scaleType = ImageView.ScaleType.FIT_CENTER
-            frame.background = TileArt(null, tileRadius(), 0x40FFFFFF, 0x1AFFFFFF)
+            frame.background = TileArt(null, radius, 0x40FFFFFF, 0x1AFFFFFF)
             frame.addView(img, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT).apply { setMargins(dp(34), dp(18), dp(34), dp(18)) })
         }
-        focusLift(frame, tileRadius())
+        focusLift(frame, radius)
         frame.tag = a.pkg
         frame.contentDescription = a.label
         frame.setOnClickListener { launch(a) }
@@ -3051,17 +2950,6 @@ class MainActivity : Activity() {
     }
 
     private fun dpf(v: Float) = v * resources.displayMetrics.density
-
-    /** Benchmark switches from adb (see Debug); true when they changed, so the screen is rebuilt with them. */
-    private fun readDebug(i: Intent?): Boolean {
-        // Kept in prefs, so the choice survives restarts until changed again ("none" turns everything back on).
-        val raw = i?.getStringExtra("plume_dbg") ?: prefs.getString("dbg", null) ?: return false
-        prefs.edit().putString("dbg", raw).apply()
-        val flags = raw.split(',').map { it.trim() }.filter { it.isNotEmpty() && it != "none" }.toSet()
-        if (flags == Debug.flags) return false
-        Debug.flags = flags
-        return true
-    }
 
     private fun navSound(key: Int) = window.decorView.playSoundEffect(when (key) {
         KeyEvent.KEYCODE_DPAD_LEFT -> SoundEffectConstants.NAVIGATION_LEFT
@@ -3265,40 +3153,6 @@ class MainActivity : Activity() {
     // ---------- shared view bits ----------
 
     /**
-     * tvOS-style focus, no outline: the focused card lifts (scale + shadow). Light mode adds a soft
-     * top sheen; dark mode brightens the glass gradient instead (a white sheen would haze it grey).
-     * Only transform/alpha/colour change, so it stays on the GPU and costs no re-layout.
-     */
-    private fun style(v: View, radius: Int, card: Boolean, lift: Float = 1.08f, onFocus: ((Boolean) -> Unit)? = null) {
-        val sheen = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, intArrayOf(0x40FFFFFF, 0x00FFFFFF)).apply {
-            cornerRadius = radius.toFloat()
-            alpha = 0
-            setDither(true)
-        }
-        val bg = GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, if (card) cardRest else intArrayOf(0, 0)).apply {
-            cornerRadius = radius.toFloat()
-            setDither(true)
-        }
-        v.background = if (dark && card) rimCard(radius, false) else bg
-        if (!dark) v.foreground = sheen
-        v.clipToOutline = true
-        v.elevation = if (card) dp(2).toFloat() else 0f
-        v.isFocusable = true
-        v.isClickable = true
-        v.setOnLongClickListener { if (!holdFired) fireHold(v); true }
-        v.setOnFocusChangeListener { _, focused ->
-            sheen.alpha = if (focused) 255 else 0
-            if (card && dark) v.background = rimCard(radius, focused)
-            else if (card) bg.colors = if (focused) cardLit else cardRest
-            v.animate()
-                .scaleX(if (focused) lift else 1f).scaleY(if (focused) lift else 1f)
-                .translationZ(if (focused) dp(14).toFloat() else 0f)
-                .setDuration(160).setInterpolator(DECELERATE).start()
-            onFocus?.invoke(focused)
-        }
-    }
-
-    /**
      * A dark-mode card on true black: near-black glass with a hairline rim, brighter along the top edge as if
      * lit from above. [lit] is the focused look: brighter glass and rim.
      */
@@ -3373,11 +3227,15 @@ class MainActivity : Activity() {
         const val WRITE_EPG ="com.android.providers.tv.permission.WRITE_EPG_DATA"
         const val TV_SETTINGS = "com.android.tv.settings"
         const val HDMI = "hdmi:" // App.pkg prefix for HDMI device tiles; the rest is the TV input id
-        const val ROW_TILES = 8
         const val DOCK_FIT = 6 // dock tiles across the glass panel
         const val DOCK_GAP = 28 // dp; room for the lens between tiles
         const val SHELF_EVERY = 9_000L // Top Shelf turns to the next item this often while it isn't focused
         const val FORK = true
+        const val ALL_APPS_COLUMNS = 6
+        const val DRAWER_PAD = 36 // dp inside the All apps sheet
+        /** Text over the artwork that takes its colour from the picture (see tintTexts), with its opacity. */
+        val TINTED = listOf(R.id.clock to 1f, R.id.date to 0.9f, R.id.weather to 0.85f,
+            R.id.shelfSource to 0.8f, R.id.shelfTitle to 1f, R.id.shelfSub to 0.9f)
         const val SCREEN_PAD = 24 // dp margin on every edge of the screen
         const val SHELF_GAP = 24 // dp between the shelf's Resume row and the dock
         const val SHELF_OPEN_SCALE = 0.74f // shelf size while the dock is open
@@ -3390,7 +3248,6 @@ class MainActivity : Activity() {
         const val FOCUS_SCALE = 1.06f
         const val LENS_PAD = 13 // dp the glass lens reaches past the focused tile
         const val REST_ALPHA = 0.88f
-        const val GRID_GAP = 16 // dp; shared by the apps row and the cards so their columns line up
         /** Shown names for the wallpaper keys saved in prefs (the keys stay English). */
         val WALLPAPER_NAMES = mapOf(
             "Rockies (day)" to R.string.wp_rockies_day, "Rockies (dusk)" to R.string.wp_rockies_dusk,
@@ -3410,10 +3267,6 @@ class MainActivity : Activity() {
         val GREYSCALE = ColorMatrixColorFilter(ColorMatrix().apply { setSaturation(0f) })
         val DECELERATE = Motion.S // every animation uses the one S-curve
         @Volatile var APPS: List<App>? = null
-        /** Mono marks made by glyph(), by package; null = icon has no usable symbol. Main thread only. */
-        val GLYPHS = HashMap<String, Bitmap?>()
-        /** accent() colours by package; null = no clear colour. Main thread only. */
-        val ACCENTS = HashMap<String, Int?>()
 
         /**
          * Colour mode tints for the bundled marks: Simple Icons' brand hex, except where that's too dark to
