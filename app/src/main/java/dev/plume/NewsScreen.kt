@@ -32,29 +32,27 @@ import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
+import android.widget.TextClock
 import android.widget.TextView
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.concurrent.Executors
 
-/** Where the launcher leaves its current backdrop, so the news screen and screensaver open on the same picture. */
-internal fun backdropFile(c: Context) = File(c.filesDir, "backdrop.jpg")
-
 /**
- * The news screen, in Plume's glass style. A header with the section tabs (on a glass capsule) and the clock, and
- * below it one story filling the rest of the screen on a frosted panel: its picture on the left, and the section,
- * headline, a few sentences of summary, source and time on the right. The story's picture also becomes the
- * drifting backdrop. Stories turn on their own every [STORY_MS] on the S-curve; at a section's end the next
- * section begins.
+ * The news screen, set like a printed newspaper: ivory serif type on a black page, fine rules between parts, no
+ * glass. Top: the date in small capitals and the time, then the sections as a line of small capitals. Below, one
+ * story: its picture in a hairline frame on the left; the section and source, a bold serif headline, the summary
+ * and the time on the right. Stories turn on their own every [STORY_MS]; at a section's end the next begins.
  *
- * Two places to be, always clearly marked: the story (its panel's rim lights up) or the tabs (the focused tab is
- * solid white). Up goes to the tabs, Down back to the story. In the tabs Left/Right pick a section; on the story
- * they turn stories. The last tab, "+ Topic", adds a topic of your own (in [NewsActivity]).
+ * Two places to be, always clear: the story, or the section line. Up goes to the sections (the one you're on is
+ * set in reverse, black on ivory), Down back to the story. Whichever you're not in is dimmed. In the sections
+ * Left/Right pick one; on the story they turn stories and OK pauses. The last section, "Add a topic", adds your
+ * own (in [NewsActivity]).
  *
  * Used by both [NewsActivity] (browsable) and [NewsDream] (the screensaver).
  */
-class NewsView(context: Context, private val canType: Boolean) : FrameLayout(context) {
+class NewsView(context: Context) : FrameLayout(context) {
     private val d = resources.displayMetrics.density
     private fun dp(v: Int) = (v * d).toInt()
     private val ui = Handler(Looper.getMainLooper())
@@ -62,50 +60,53 @@ class NewsView(context: Context, private val canType: Boolean) : FrameLayout(con
     private val net = Executors.newFixedThreadPool(2) // story details and pictures
     private val prefs = context.getSharedPreferences("home", Context.MODE_PRIVATE)
 
-    private val backdrop = Backdrop(context, null)
-    private val panelGlass = GlassView(context).apply { tint = 0x8C121216.toInt(); corner = 32f * d }
-    private val tabsGlass = GlassView(context).apply { capsule = true }
-    private val tabs = LinearLayout(context).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-        setPadding(dp(6), dp(6), dp(6), dp(6))
+    private val serif = Typeface.create("serif", Typeface.NORMAL)
+    private val serifBold = Typeface.create("serif", Typeface.BOLD)
+    private val serifItalic = Typeface.create("serif", Typeface.ITALIC)
+
+    private val dateLine = text(13f, serif, MUTED).apply { letterSpacing = 0.18f; isAllCaps = true }
+    private val clock = TextClock(context).apply {
+        format12Hour = "h:mm a"; format24Hour = "HH:mm"
+        setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f); typeface = serif; setTextColor(MUTED); letterSpacing = 0.12f; isAllCaps = true
     }
+    private val tabs = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
     private val tabsScroll = HorizontalScrollView(context).apply {
         isHorizontalScrollBarEnabled = false
         isFocusable = false
-        descendantFocusability = FOCUS_BLOCK_DESCENDANTS // focus is drawn by us (see zone), not Android's
+        descendantFocusability = FOCUS_BLOCK_DESCENDANTS // focus is drawn by us (see onTabs), not by Android
         addView(tabs)
     }
-    private val tabsRim = GradientDrawable().apply { cornerRadius = 40 * d; setColor(0); setStroke(maxOf(1, dp(1)), 0x38FFFFFF) }
 
     private val art = ImageView(context).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
-    private val artBox = FrameLayout(context)
-    private val kicker = text(13f, "sans-serif-medium").apply { letterSpacing = 0.14f; isAllCaps = true; alpha = 0.75f }
-    private val headline = text(32f, "sans-serif-black").apply {
-        maxLines = 3
-        ellipsize = TextUtils.TruncateAt.END
-        setLineSpacing(0f, 0.95f)
-        letterSpacing = -0.01f
+    private val artBox = FrameLayout(context).apply {
+        setPadding(dp(1), dp(1), dp(1), dp(1))
+        background = GradientDrawable().apply { setColor(0xFF161616.toInt()); setStroke(maxOf(1, dp(1)), RULE) }
+        addView(art, LayoutParams(MATCH_PARENT, MATCH_PARENT))
     }
-    private val summary = text(17f, "sans-serif").apply {
-        maxLines = 7
+    private val kicker = text(13f, serif, MUTED).apply { letterSpacing = 0.18f; isAllCaps = true }
+    private val headline = text(36f, serifBold, INK).apply {
+        maxLines = 4
         ellipsize = TextUtils.TruncateAt.END
-        setLineSpacing(0f, 1.18f)
-        alpha = 0.88f
+        setLineSpacing(0f, 1.02f)
     }
-    private val meta = text(15f, "sans-serif-medium").apply { alpha = 0.8f }
+    private val summary = text(19f, serif, INK).apply {
+        maxLines = 8
+        ellipsize = TextUtils.TruncateAt.END
+        setLineSpacing(0f, 1.32f)
+        alpha = 0.86f
+    }
+    private val byline = text(16f, serifItalic, MUTED)
+    private val count = text(13f, serif, MUTED).apply { letterSpacing = 0.12f }
     private val timer = ProgressBar(context, null, android.R.attr.progressBarStyleHorizontal).apply {
         max = 1000
         progressDrawable = LayerDrawable(arrayOf(
-            GradientDrawable().apply { cornerRadius = 2 * d; setColor(0x33FFFFFF) },
-            ClipDrawable(GradientDrawable().apply { cornerRadius = 2 * d; setColor(0xE6FFFFFF.toInt()) }, Gravity.START, ClipDrawable.HORIZONTAL),
+            GradientDrawable().apply { setColor(RULE) },
+            ClipDrawable(GradientDrawable().apply { setColor(INK) }, Gravity.START, ClipDrawable.HORIZONTAL),
         )).apply { setId(0, android.R.id.background); setId(1, android.R.id.progress) }
     }
-    private val count = text(14f, "sans-serif-medium").apply { alpha = 0.7f }
-    private val status = text(18f, "sans-serif-medium").apply { gravity = Gravity.CENTER; alpha = 0.85f }
-    private val panel = GlassFrame(context, null)
-    private val panelRim = RimDrawable(32f * d, d, 0x47FFFFFF, 0x14FFFFFF)
-    private val panelRimLit = RimDrawable(32f * d, d * 2f, 0xE6FFFFFF.toInt(), 0x66FFFFFF)
+    private val status = text(20f, serifItalic, MUTED).apply { gravity = Gravity.CENTER }
+    private val head = LinearLayout(context)
+    private val page = LinearLayout(context)
 
     private var sections = emptyList<News.Section>()
     private var sec = 0
@@ -113,122 +114,80 @@ class NewsView(context: Context, private val canType: Boolean) : FrameLayout(con
     private var started = 0L
     private var swap = 0
     private var onTabs = false
-    private var tabAt = 0 // focused tab while on the tabs; sections.size is "+ Topic"
+    private var tabAt = 0 // focused section while on the section line; sections.size is "Add a topic"
     private var paused = false
-    private val pics = object : LruCache<String, Pair<Bitmap, Bitmap>>(40 * 1024 * 1024) {
-        override fun sizeOf(key: String, value: Pair<Bitmap, Bitmap>) = value.first.byteCount + value.second.byteCount
+    private val pics = object : LruCache<String, Bitmap>(32 * 1024 * 1024) {
+        override fun sizeOf(key: String, value: Bitmap) = value.byteCount
     }
-    private var homeBig: Bitmap? = null
-    private var homeSmall: Bitmap? = null
 
-    /** Called when "+ Topic" is chosen (the browsable screen asks for a topic; the screensaver opens that screen). */
+    /** Called when "Add a topic" is chosen (the news screen asks for it; the screensaver opens that screen). */
     var onAddTopic: (() -> Unit)? = null
 
     init {
-        setBackgroundColor(Color.BLACK)
-        addView(backdrop, LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        setBackgroundColor(PAPER)
+        setPadding(dp(44), dp(30), dp(44), dp(28))
 
-        // Header: tabs on a glass capsule (left), date and time (right).
-        val tabsBox = GlassFrame(context, null).apply {
-            addView(tabsGlass, 0, LayoutParams(MATCH_PARENT, MATCH_PARENT))
-            addView(tabsScroll, LayoutParams(WRAP_CONTENT, WRAP_CONTENT))
-            foreground = tabsRim
+        // Masthead: date left, time right, a rule, the section line, a double rule.
+        val dateRow = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(dateLine, LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f))
+            addView(clock)
         }
-        addView(tabsBox, LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.TOP or Gravity.START).apply {
-            setMargins(dp(24), dp(24), dp(250), 0)
-        })
-        val clockBox = LinearLayout(context).apply {
+        head.apply {
             orientation = LinearLayout.VERTICAL
-            gravity = Gravity.END
-            addView(TintClock(context, null).apply {
-                format12Hour = "EEEE d MMMM"; format24Hour = "EEEE d MMMM"
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f); typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-                setTextColor(Color.WHITE); setShadowLayer(8 * d, 0f, d, 0x66000000); alpha = 0.9f
-            })
-            addView(TintClock(context, null).apply {
-                format12Hour = "h:mm"; format24Hour = "HH:mm"
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 40f); typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-                includeFontPadding = false; letterSpacing = -0.03f
-                setTextColor(Color.WHITE); setShadowLayer(10 * d, 0f, d, 0x66000000)
-            })
+            addView(dateRow)
+            addView(rule(1), LinearLayout.LayoutParams(MATCH_PARENT, maxOf(1, dp(1))).apply { topMargin = dp(10) })
+            addView(tabsScroll, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(8); bottomMargin = dp(8) })
+            addView(rule(1), LinearLayout.LayoutParams(MATCH_PARENT, maxOf(1, dp(1))))
+            addView(rule(1), LinearLayout.LayoutParams(MATCH_PARENT, maxOf(1, dp(1))).apply { topMargin = dp(3) })
         }
-        addView(clockBox, LayoutParams(WRAP_CONTENT, WRAP_CONTENT, Gravity.TOP or Gravity.END).apply { setMargins(0, dp(22), dp(24), 0) })
 
-        // The story: one frosted panel filling the rest of the screen. Picture left, words right.
-        artBox.apply {
-            background = TileArt(null, 20f * d, 0x33FFFFFF, 0x14FFFFFF)
-            addView(art, LayoutParams(MATCH_PARENT, MATCH_PARENT))
-            outlineProvider = object : android.view.ViewOutlineProvider() {
-                override fun getOutline(view: View, o: android.graphics.Outline) = o.setRoundRect(0, 0, view.width, view.height, 20f * d)
-            }
-            clipToOutline = true // a round rect: the cheap kind of clip
-        }
-        val words = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            clipChildren = false
-            addView(kicker)
-            addView(headline, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(8) })
-            addView(summary, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(14) })
-        }
+        // The story: picture left, words right, a column rule between.
         val left = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             addView(artBox, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
-            addView(meta, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(16) })
             addView(LinearLayout(context).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
-                addView(timer, LinearLayout.LayoutParams(dp(160), dp(4)))
+                addView(timer, LinearLayout.LayoutParams(0, maxOf(1, dp(1)), 1f))
                 addView(count, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { marginStart = dp(14) })
-            }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(12) })
+            }, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(14) })
         }
-        val body = LinearLayout(context).apply {
+        val words = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(kicker)
+            addView(headline, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(10) })
+            addView(rule(0), LinearLayout.LayoutParams(dp(56), maxOf(1, dp(1))).apply { topMargin = dp(16) })
+            addView(summary, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(16) })
+            addView(byline, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { topMargin = dp(16) })
+        }
+        page.apply {
             orientation = LinearLayout.HORIZONTAL
-            clipChildren = false
-            setPadding(dp(28), dp(28), dp(32), dp(28))
-            addView(left, LinearLayout.LayoutParams(0, MATCH_PARENT, 0.44f))
-            addView(words, LinearLayout.LayoutParams(0, MATCH_PARENT, 0.56f).apply { marginStart = dp(32) })
+            addView(left, LinearLayout.LayoutParams(0, MATCH_PARENT, 0.42f))
+            addView(rule(1), LinearLayout.LayoutParams(maxOf(1, dp(1)), MATCH_PARENT).apply { marginStart = dp(28); marginEnd = dp(28) })
+            addView(words, LinearLayout.LayoutParams(0, MATCH_PARENT, 0.58f))
         }
-        panel.apply {
-            addView(panelGlass, 0, LayoutParams(MATCH_PARENT, MATCH_PARENT))
-            addView(body, LayoutParams(MATCH_PARENT, MATCH_PARENT))
-            foreground = panelRimLit
-        }
-        addView(panel, LayoutParams(MATCH_PARENT, MATCH_PARENT).apply { setMargins(dp(24), dp(104), dp(24), dp(24)) })
+        addView(LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(head)
+            addView(page, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f).apply { topMargin = dp(22) })
+        }, LayoutParams(MATCH_PARENT, MATCH_PARENT))
         addView(status, LayoutParams(MATCH_PARENT, WRAP_CONTENT, Gravity.CENTER))
 
-        loadHomeBackdrop()
+        dateLine.text = java.text.SimpleDateFormat("EEEE, d MMMM yyyy", java.util.Locale.getDefault()).format(java.util.Date())
         loadNews()
     }
 
-    private fun text(sp: Float, family: String) = TintText(context, null).apply {
+    private fun text(sp: Float, face: Typeface, color: Int) = TextView(context).apply {
         setTextSize(TypedValue.COMPLEX_UNIT_SP, sp)
-        typeface = Typeface.create(family, Typeface.NORMAL)
-        setTextColor(Color.WHITE)
-        setShadowLayer(6 * d, 0f, d, 0x59000000)
+        typeface = face
+        setTextColor(color)
+        includeFontPadding = false
     }
 
-    /** The launcher's last backdrop (or its default wallpaper): shown until a story's own picture arrives. */
-    private fun loadHomeBackdrop() = io.execute {
-        val big = try {
-            BitmapFactory.decodeFile(backdropFile(context).path)
-        } catch (e: Throwable) {
-            null
-        } ?: BitmapFactory.decodeResource(resources, R.drawable.wallpaper_dark)
-        val small = big?.let { smallBlur(it) }
-        ui.post {
-            homeBig = big
-            homeSmall = small
-            if (backdrop.current == null) showPicture(big, small)
-        }
-    }
-
-    private fun smallBlur(b: Bitmap) = blurred(Bitmap.createScaledBitmap(b, 320, maxOf(1, 320 * b.height / b.width), true), 8)
-
-    private fun showPicture(big: Bitmap?, small: Bitmap?) {
-        backdrop.show(big)
-        panelGlass.show(small)
-        tabsGlass.show(small)
-    }
+    /** A hairline in the rule colour ([weight] 0 for the short ivory rule under the headline). */
+    private fun rule(weight: Int) = View(context).apply { setBackgroundColor(if (weight == 0) INK else RULE) }
 
     /** Saved news straight away, then a fresh fetch if it's stale. */
     private fun loadNews() = io.execute {
@@ -262,46 +221,47 @@ class NewsView(context: Context, private val canType: Boolean) : FrameLayout(con
 
     private fun buildTabs() {
         tabs.removeAllViews()
-        (sections.map { it.name } + "+  " + context.getString(R.string.news_add_topic)).forEachIndexed { i, name ->
+        val names = sections.map { it.name } + context.getString(R.string.news_add_topic)
+        names.forEachIndexed { i, name ->
             tabs.addView(TextView(context).apply {
                 text = name
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 15f)
+                typeface = serif
+                letterSpacing = 0.14f
+                isAllCaps = true
                 gravity = Gravity.CENTER
-                setPadding(dp(16), 0, dp(16), 0)
-            }, LinearLayout.LayoutParams(WRAP_CONTENT, dp(34)).apply { if (i > 0) marginStart = dp(4) })
+                includeFontPadding = false
+                setPadding(dp(12), dp(7), dp(12), dp(7))
+            }, LinearLayout.LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply { if (i > 0) marginStart = dp(10) })
         }
         styleFocus()
     }
 
     /**
-     * Where focus is, drawn plainly. On the tabs: the focused tab is solid white with dark text and a little larger;
-     * the current section keeps a glass outline; the capsule's rim lights up and the story panel dims. On the story:
-     * its panel's rim lights up and the current section's tab is solid white.
+     * Where focus is. On the section line: the focused section is set in reverse (black on ivory) and the story
+     * dims. On the story: the current section is ivory and underlined, the others muted, and the line dims a little.
      */
     private fun styleFocus() {
         for (i in 0 until tabs.childCount) {
             val t = tabs.getChildAt(i) as TextView
             val focused = onTabs && i == tabAt
             val current = i == sec
-            t.background = GradientDrawable().apply {
-                cornerRadius = 17 * d
-                when {
-                    focused -> setColor(0xFFFFFFFF.toInt())
-                    current && !onTabs -> setColor(0xF2FFFFFF.toInt())
-                    current -> { setColor(0x26FFFFFF); setStroke(maxOf(1, dp(1)), 0x99FFFFFF.toInt()) }
-                    else -> setColor(0)
-                }
+            t.background = when {
+                focused -> GradientDrawable().apply { setColor(INK) }
+                current -> UnderlineDrawable(INK, maxOf(1, dp(2)))
+                else -> null
             }
-            t.setTextColor(if (focused || (current && !onTabs)) 0xFF0A0A0A.toInt() else 0xD9FFFFFF.toInt())
-            t.animate().scaleX(if (focused) 1.08f else 1f).scaleY(if (focused) 1.08f else 1f)
-                .setDuration(Motion.FOCUS_MS).setInterpolator(Motion.S).start()
+            t.setTextColor(when {
+                focused -> PAPER
+                current -> INK
+                else -> MUTED
+            })
+            t.paint.isFakeBoldText = current || focused
+            t.invalidate()
         }
-        tabsRim.setStroke(maxOf(1, dp(if (onTabs) 2 else 1)), if (onTabs) 0xCCFFFFFF.toInt() else 0x38FFFFFF)
-        panel.foreground = if (onTabs) panelRim else panelRimLit
-        panel.animate().alpha(if (onTabs) 0.72f else 1f).setDuration(Motion.FOCUS_MS).setInterpolator(Motion.S).start()
-        val target = tabs.getChildAt(if (onTabs) tabAt else sec)
-        target?.let { t -> tabsScroll.post { tabsScroll.smoothScrollTo(maxOf(0, t.left - dp(60)), 0) } }
+        tabsScroll.animate().alpha(if (onTabs) 1f else 0.85f).setDuration(Motion.FOCUS_MS).setInterpolator(Motion.S).start()
+        page.animate().alpha(if (onTabs) 0.4f else 1f).setDuration(Motion.FOCUS_MS).setInterpolator(Motion.S).start()
+        tabs.getChildAt(if (onTabs) tabAt else sec)?.let { t -> tabsScroll.post { tabsScroll.smoothScrollTo(maxOf(0, t.left - dp(60)), 0) } }
     }
 
     /** Shows the current story; [dir] is the way it turned (-1, 1), 0 for no animation. */
@@ -309,70 +269,65 @@ class NewsView(context: Context, private val canType: Boolean) : FrameLayout(con
         val s = sections.getOrNull(sec) ?: return
         val x = s.stories.getOrNull(story) ?: return
         val fill = {
-            kicker.text = s.name
+            kicker.text = listOf(s.name, x.source).filter { it.isNotEmpty() }.joinToString("   ·   ")
             headline.text = x.title
             val det = News.cachedDetail(x)
             summary.text = det?.summary.orEmpty()
-            meta.text = listOf(x.source, News.ago(x.time)).filter { it.isNotEmpty() }.joinToString("  ·  ")
-            count.text = "${story + 1} / ${s.stories.size}"
-            art.setImageBitmap(det?.image?.let { pics.get(it)?.first })
+            byline.text = News.ago(x.time).let { if (it.isEmpty()) "" else context.getString(R.string.news_published, it) }
+            count.text = "${story + 1} of ${s.stories.size}"
+            val pic = det?.image?.let { pics.get(it) }
+            art.setImageBitmap(pic)
+            artBox.visibility = if (det != null && det.image == null) View.INVISIBLE else View.VISIBLE
         }
-        val parts = listOf(kicker, headline, summary, meta, artBox)
-        val rest = mapOf<View, Float>(kicker to 0.75f, headline to 1f, summary to 0.88f, meta to 0.8f, artBox to 1f)
+        val parts = listOf(kicker, headline, summary, byline, artBox)
+        val rest = mapOf<View, Float>(kicker to 1f, headline to 1f, summary to 0.86f, byline to 1f, artBox to 1f)
         val token = ++swap
         if (dir == 0) fill() else {
-            parts.forEach { it.animate().alpha(0f).translationX(-dir * 24 * d).setStartDelay(0).setDuration(160).setInterpolator(Motion.S).start() }
+            parts.forEach { it.animate().alpha(0f).setStartDelay(0).setDuration(180).setInterpolator(Motion.S).start() }
             ui.postDelayed({
                 if (token != swap) return@postDelayed
                 fill()
                 parts.forEachIndexed { i, v ->
-                    v.translationX = dir * 32 * d
-                    v.animate().alpha(rest[v]!!).translationX(0f).setStartDelay(i * 35L).setDuration(420).setInterpolator(Motion.S).start()
+                    v.animate().alpha(rest[v]!!).setStartDelay(i * 40L).setDuration(380).setInterpolator(Motion.S).start()
                 }
-            }, 170)
+            }, 190)
         }
         styleFocus()
-        loadDetail(x, current = true)
-        s.stories.getOrNull(story + 1)?.let { loadDetail(it, current = false) } // ready before it's shown
+        loadDetail(x)
+        s.stories.getOrNull(story + 1)?.let { loadDetail(it) } // ready before it's shown
         started = System.currentTimeMillis()
         ui.removeCallbacks(tick)
         ui.post(tick)
     }
 
     /** The story's summary and picture: fetched once, then shown if it's still the current story. */
-    private fun loadDetail(x: News.Story, current: Boolean) {
+    private fun loadDetail(x: News.Story) {
         val cached = News.cachedDetail(x)
         if (cached != null && (cached.image == null || pics.get(cached.image) != null)) {
-            if (current) applyDetail(x, cached)
+            if (isCurrent(x)) applyDetail(cached)
             return
         }
         net.execute {
             val det = News.detail(x, prefs)
-            val pic = det.image?.let { u -> pics.get(u) ?: decode(u)?.let { b -> (b to smallBlur(b)).also { p -> ui.post { pics.put(u, p) } } } }
-            ui.post { if (current || isCurrent(x)) applyDetail(x, det, pic) }
+            val pic = det.image?.let { u -> pics.get(u) ?: decode(u)?.also { pics.put(u, it) } }
+            ui.post { if (isCurrent(x)) applyDetail(det, pic) }
         }
     }
 
     private fun isCurrent(x: News.Story) = sections.getOrNull(sec)?.stories?.getOrNull(story) === x
 
-    private fun applyDetail(x: News.Story, det: News.Detail, pic: Pair<Bitmap, Bitmap>? = det.image?.let { pics.get(it) }) {
-        if (!isCurrent(x)) return
+    private fun applyDetail(det: News.Detail, pic: Bitmap? = det.image?.let { pics.get(it) }) {
         if (summary.text.isEmpty() && det.summary.isNotEmpty()) {
             summary.text = det.summary
             summary.alpha = 0f
-            summary.animate().alpha(0.88f).setDuration(420).setInterpolator(Motion.S).start()
+            summary.animate().alpha(0.86f).setDuration(420).setInterpolator(Motion.S).start()
         }
-        if (pic != null) {
-            if (art.drawable == null) {
-                art.alpha = 0f
-                art.setImageBitmap(pic.first)
-                art.animate().alpha(1f).setDuration(420).setInterpolator(Motion.S).start()
-            }
-            showPicture(pic.first, pic.second)
-        } else if (backdrop.current == null || det.image == null) {
-            showPicture(homeBig, homeSmall)
+        if (pic != null && art.drawable == null) {
+            art.alpha = 0f
+            art.setImageBitmap(pic)
+            art.animate().alpha(1f).setDuration(420).setInterpolator(Motion.S).start()
         }
-        artBox.visibility = if (pic != null || det.image != null) View.VISIBLE else View.INVISIBLE
+        artBox.visibility = if (det.image == null) View.INVISIBLE else View.VISIBLE
     }
 
     private fun decode(url: String): Bitmap? = try {
@@ -383,7 +338,7 @@ class NewsView(context: Context, private val canType: Boolean) : FrameLayout(con
         val bytes = con.inputStream.use { it.readBytes() }
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-        val target = resources.displayMetrics.widthPixels
+        val target = resources.displayMetrics.widthPixels / 2 // the picture takes under half the screen
         var sample = 1
         while (bounds.outWidth / (sample * 2) >= target) sample *= 2
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })
@@ -392,7 +347,7 @@ class NewsView(context: Context, private val canType: Boolean) : FrameLayout(con
         null
     }
 
-    /** Fills the timer bar, and turns to the next story when it's full (not while you're in the tabs). */
+    /** Fills the timer line, and turns to the next story when it's full (not while you're in the sections or paused). */
     private val tick = object : Runnable {
         override fun run() {
             if (onTabs || paused) {
@@ -416,8 +371,9 @@ class NewsView(context: Context, private val canType: Boolean) : FrameLayout(con
     }
 
     /**
-     * The remote. Story: Left/Right turn stories, Up goes to the tabs, OK pauses or resumes. Tabs: Left/Right pick
-     * a section (shown at once), Down or OK goes back to the story; OK on "+ Topic" adds one. True when handled.
+     * The remote. Story: Left/Right turn stories, Up goes to the sections, OK pauses or resumes. Sections:
+     * Left/Right pick one (shown at once), Down or OK goes back to the story; OK on "Add a topic" adds one.
+     * True when handled.
      */
     fun key(e: KeyEvent): Boolean {
         val arrows = setOf(KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN)
@@ -448,7 +404,7 @@ class NewsView(context: Context, private val canType: Boolean) : FrameLayout(con
         return true
     }
 
-    /** Moving along the tabs shows that section straight away; "+ Topic" just takes focus. */
+    /** Moving along the sections shows that section straight away; "Add a topic" just takes focus. */
     private fun pickTab(i: Int) {
         tabAt = i
         if (i < sections.size && i != sec) {
@@ -467,7 +423,24 @@ class NewsView(context: Context, private val canType: Boolean) : FrameLayout(con
 
     private companion object {
         const val STORY_MS = 15_000L
+        const val PAPER = 0xFF0A0A0A.toInt() // the page: near-black
+        const val INK = 0xFFEFE9DC.toInt() // ivory, like newsprint ink reversed
+        const val MUTED = 0xFFA39D92.toInt() // dates, sections, bylines
+        const val RULE = 0xFF3A3834.toInt() // hairline rules
     }
+}
+
+/** A line under a section name, the way a newspaper marks the page you're on. */
+private class UnderlineDrawable(private val color: Int, private val h: Int) : android.graphics.drawable.Drawable() {
+    private val p = android.graphics.Paint().apply { this.color = color }
+    override fun draw(c: android.graphics.Canvas) {
+        val b = bounds
+        c.drawRect(b.left + b.width() * 0.12f, (b.bottom - h).toFloat(), b.right - b.width() * 0.12f, b.bottom.toFloat(), p)
+    }
+    override fun setAlpha(alpha: Int) {}
+    override fun setColorFilter(cf: android.graphics.ColorFilter?) {}
+    @Deprecated("Deprecated in Java")
+    override fun getOpacity() = android.graphics.PixelFormat.TRANSLUCENT
 }
 
 /** The news screen opened from the launcher (the morning briefing, or News in settings). Back leaves. */
@@ -477,7 +450,7 @@ class NewsActivity : Activity() {
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
         window.setBackgroundDrawable(null)
-        view = NewsView(this, canType = true).also {
+        view = NewsView(this).also {
             it.onAddTopic = { askTopic() }
             setContentView(it)
         }
@@ -537,7 +510,7 @@ class NewsDream : DreamService() {
         super.onAttachedToWindow()
         isInteractive = true
         isFullscreen = true
-        view = NewsView(this, canType = false).also {
+        view = NewsView(this).also {
             it.onAddTopic = {
                 startActivity(Intent(this, NewsActivity::class.java).putExtra(NewsActivity.EXTRA_ADD, true).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                 finish()

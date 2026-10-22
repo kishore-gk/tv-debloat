@@ -408,7 +408,6 @@ class MainActivity : Activity() {
         ui.removeCallbacks(wallpaperTick)
         ui.removeCallbacks(shelfTick)
         if (editing) endEdit()
-        saveBackdrop()
         super.onPause()
     }
 
@@ -3066,23 +3065,6 @@ class MainActivity : Activity() {
         val top = sections.firstOrNull()?.stories?.firstOrNull() ?: return null
         if (hideKey(packageName, top.title) in prefs.getStringSet("hidden_watch", emptySet())!!) return null
         return Prog(top.title, getString(R.string.news_briefing_sub, sections.sumOf { it.stories.size }), 0, null, NEWS_INTENT, packageName)
-    }
-
-    /** The launcher's backdrop, left for the news screen and screensaver to open on (written when Plume is left). */
-    private var savedBackdrop: Bitmap? = null
-
-    private fun saveBackdrop() {
-        val b = backdrop.current ?: return
-        if (b === savedBackdrop) return
-        savedBackdrop = b
-        io.execute {
-            try {
-                val part = File(filesDir, "backdrop.part")
-                part.outputStream().use { b.compress(Bitmap.CompressFormat.JPEG, 88, it) }
-                part.renameTo(backdropFile(this))
-            } catch (e: Exception) {
-            }
-        }
     }
 
     private fun pickEdition() {
