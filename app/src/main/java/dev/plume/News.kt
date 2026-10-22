@@ -103,9 +103,23 @@ internal object News {
             ?: EDITIONS.first { it.ceid == "US:en" }
     }
 
+    /** Topics you added (anything Google News can search: "Formula 1", "ISRO", "Bengaluru metro"), oldest first. */
+    fun custom(prefs: SharedPreferences): List<Topic> =
+        (prefs.getString("news_custom", "") ?: "").split('\n').filter { it.isNotBlank() }.map { Topic("q:$it", it, null, it) }
+
+    fun addCustom(prefs: SharedPreferences, term: String) {
+        val t = term.trim().replace('\n', ' ')
+        if (t.isEmpty() || custom(prefs).any { it.label.equals(t, ignoreCase = true) }) return
+        prefs.edit().putString("news_custom", (custom(prefs).map { it.label } + t).joinToString("\n")).apply()
+    }
+
+    fun removeCustom(prefs: SharedPreferences, term: String) {
+        prefs.edit().putString("news_custom", custom(prefs).map { it.label }.filter { it != term }.joinToString("\n")).apply()
+    }
+
     fun topicsOn(prefs: SharedPreferences): List<Topic> {
         val off = prefs.getStringSet("news_off", null) ?: DEFAULT_OFF
-        return TOPICS.filter { it.key !in off && (it.key != "local" || city(prefs) != null) }
+        return TOPICS.filter { it.key !in off && (it.key != "local" || city(prefs) != null) } + custom(prefs)
     }
 
     /** Local news follows the weather location (automatic from the IP, or the city picked in settings). */
@@ -166,6 +180,7 @@ internal object News {
     /** The topic's own feed; if that fails or comes back empty, a search for it in the same edition. */
     private fun fetchTopic(t: Topic, ed: Edition, prefs: SharedPreferences): List<Story> {
         val q = "hl=${ed.hl}&gl=${ed.gl}&ceid=${enc(ed.ceid)}"
+        if (t.key.startsWith("q:")) return parse("https://news.google.com/rss/search?q=${enc("${t.search} when:2d")}&$q")
         val primary = when {
             t.key == "top" -> "https://news.google.com/rss?$q"
             t.key == "local" -> "https://news.google.com/rss/headlines/section/geo/${enc(city(prefs) ?: return emptyList())}?$q"
@@ -231,4 +246,138 @@ internal object News {
     }
 
     private fun enc(s: String) = URLEncoder.encode(s, "UTF-8")
+
+    // ---------- story details: a summary and a picture ----------
+
+    /** What a headline alone doesn't give: a few sentences of summary, a picture, and the publisher's own link. */
+    class Detail(val summary: String, val image: String?, val url: String?)
+
+    private val details = object : android.util.LruCache<String, Detail>(64) {}
+
+    fun cachedDetail(s: Story): Detail? = details.get(s.title)
+
+    /**
+     * Google News feeds carry only headlines. For the picture and summary: Bing's news feed, searched for the
+     * headline, gives a snippet, a picture (up to 1600 px) and the publisher's link; the publisher's own page then
+     * usually has a larger picture and a longer summary (its Open Graph tags). Each step is optional: a story shows
+     * with whatever arrived. Blocking: call it off the main thread.
+     */
+    fun detail(s: Story, prefs: SharedPreferences): Detail {
+        details.get(s.title)?.let { return it }
+        val ed = edition(prefs)
+        val mkt = (if (ed.hl.contains('-')) ed.hl else "${ed.hl}-${ed.gl}").let { if (it.length == 5) it else "en-${ed.gl}" }
+        var summary = ""
+        var image: String? = null
+        var url: String? = null
+        try {
+            val hit = bingItems("https://www.bing.com/news/search?q=${enc(s.title)}&format=rss&setmkt=$mkt")
+                .maxByOrNull { overlap(it.title, s.title) }?.takeIf { overlap(it.title, s.title) >= 0.45 }
+            if (hit != null) {
+                summary = hit.description
+                image = hit.image?.let { (if (it.startsWith("http:")) "https:" + it.removePrefix("http:") else it) + "&w=1600&h=900&c=14" }
+                url = hit.url
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("TvHome", "news detail (bing) failed: ${s.title} ($e)")
+        }
+        url?.let { page ->
+            try {
+                val og = openGraph(page)
+                og["og:image"]?.takeIf { it.startsWith("http") }?.let { image = it }
+                val longer = og["og:description"] ?: og["description"]
+                if (longer != null && longer.length > summary.length) summary = longer
+            } catch (e: Exception) {
+                // Paywalls, consent pages and app-only sites: keep what Bing gave.
+            }
+        }
+        val d = Detail(clean(summary), image, url)
+        details.put(s.title, d)
+        return d
+    }
+
+    private class BingItem(val title: String, val description: String, val image: String?, val url: String?)
+
+    private fun bingItems(feed: String): List<BingItem> {
+        val con = open(feed)
+        if (con.responseCode != 200) return emptyList()
+        return con.inputStream.use { input ->
+            val p = Xml.newPullParser()
+            p.setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, false)
+            p.setInput(input, null)
+            val out = ArrayList<BingItem>()
+            var inItem = false
+            var title = ""; var desc = ""; var img: String? = null; var link = ""
+            while (p.next() != XmlPullParser.END_DOCUMENT) {
+                when (p.eventType) {
+                    XmlPullParser.START_TAG -> when (p.name) {
+                        "item" -> { inItem = true; title = ""; desc = ""; img = null; link = "" }
+                        "title" -> if (inItem) title = p.nextText()
+                        "description" -> if (inItem) desc = p.nextText()
+                        "link" -> if (inItem) link = p.nextText()
+                        "News:Image" -> if (inItem) img = p.nextText()
+                    }
+                    XmlPullParser.END_TAG -> if (p.name == "item" && inItem) {
+                        inItem = false
+                        // Bing wraps the publisher's link; the real one is its url= parameter.
+                        val real = Regex("[?&]url=([^&]+)").find(link)?.groupValues?.get(1)?.let { java.net.URLDecoder.decode(it, "UTF-8") }
+                        out += BingItem(title, desc, img, real ?: link.takeIf { it.isNotBlank() })
+                    }
+                }
+            }
+            out
+        }
+    }
+
+    /** og:image, og:description and the plain description meta tag from the start of a web page. */
+    private fun openGraph(page: String): Map<String, String> {
+        val con = open(page)
+        if (con.responseCode !in 200..299) return emptyMap()
+        val head = con.inputStream.use { input ->
+            val buf = java.io.ByteArrayOutputStream()
+            val chunk = ByteArray(16 * 1024)
+            while (buf.size() < 400 * 1024) { // the tags are in <head>; stop well before a long page ends
+                val n = input.read(chunk)
+                if (n < 0) break
+                buf.write(chunk, 0, n)
+                if (buf.toString("UTF-8").contains("</head>", ignoreCase = true)) break
+            }
+            buf.toString("UTF-8")
+        }
+        val out = HashMap<String, String>()
+        for (m in Regex("<meta\\s[^>]*>", RegexOption.IGNORE_CASE).findAll(head)) {
+            val tag = m.value
+            val key = Regex("(?:property|name)\\s*=\\s*[\"']([^\"']+)[\"']", RegexOption.IGNORE_CASE).find(tag)?.groupValues?.get(1)?.lowercase() ?: continue
+            val value = Regex("content\\s*=\\s*\"([^\"]*)\"|content\\s*=\\s*'([^']*)'", RegexOption.IGNORE_CASE).find(tag)
+                ?.let { it.groupValues[1].ifEmpty { it.groupValues[2] } } ?: continue
+            if (key in setOf("og:image", "og:description", "description", "twitter:image") && key !in out) out[key] = value
+        }
+        if ("og:image" !in out) out["twitter:image"]?.let { out["og:image"] = it }
+        return out
+    }
+
+    private fun open(url: String) = (URL(url).openConnection() as HttpURLConnection).apply {
+        connectTimeout = 7000
+        readTimeout = 7000
+        instanceFollowRedirects = true
+        setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14; Smart TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36")
+        setRequestProperty("Accept-Language", "en")
+    }
+
+    /** Share of the headline's words found in the other title: picks the right Bing result for a story. */
+    private fun overlap(a: String, b: String): Double {
+        fun words(s: String) = s.lowercase().split(Regex("[^\\p{L}\\p{N}]+")).filter { it.length > 2 }.toSet()
+        val wb = words(b)
+        if (wb.isEmpty()) return 0.0
+        return words(a).count { it in wb }.toDouble() / wb.size
+    }
+
+    /** HTML entities and tags out, whitespace tidied, and cut at a sentence end near 420 characters. */
+    private fun clean(s: String): String {
+        val t = android.text.Html.fromHtml(s, android.text.Html.FROM_HTML_MODE_LEGACY).toString()
+            .replace(Regex("\\s+"), " ").trim().removeSuffix("...").removeSuffix("…").trim()
+        if (t.length <= 420) return t
+        val cut = t.substring(0, 420)
+        val end = cut.lastIndexOfAny(charArrayOf('.', '!', '?'))
+        return if (end > 200) cut.substring(0, end + 1) else cut.substringBeforeLast(' ') + "…"
+    }
 }

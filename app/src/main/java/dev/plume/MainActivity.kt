@@ -3096,13 +3096,60 @@ class MainActivity : Activity() {
         }, News.EDITIONS.indexOfFirst { it.ceid == current }.coerceAtLeast(0)) { renderSettings(R.string.news_region) }
     }
 
-    private fun pickTopics() {
+    /** Topics page: the standard sections (on/off), then your own topics (OK removes one), then "Add a topic…". */
+    private fun pickTopics(focus: Int = 0) {
         if (!prefs.contains("news_off")) prefs.edit().putStringSet("news_off", News.DEFAULT_OFF).apply()
-        toggles(getString(R.string.news_topics), News.TOPICS.map { News.sectionName(it, prefs) to it.key }, "news_off",
-            getString(R.string.on), getString(R.string.off)) {
+        val off = prefs.getStringSet("news_off", emptySet())!!
+        val standard = News.TOPICS.mapIndexed { i, t ->
+            page(News.sectionName(t, prefs), getString(if (t.key in off) R.string.off else R.string.on)) {
+                prefs.edit().putStringSet("news_off", if (t.key in off) off - t.key else off + t.key).apply()
+                pickTopics(i)
+            }
+        }
+        val mine = News.custom(prefs).mapIndexed { i, t ->
+            page(t.label, getString(R.string.news_remove)) {
+                News.removeCustom(prefs, t.label)
+                pickTopics(standard.size + i)
+            }
+        }
+        val rows = standard + mine + page(getString(R.string.news_add_topic) + "…") { addTopic() }
+        showPage(getString(R.string.news_topics), rows, focus) {
             refreshNews()
             renderSettings(R.string.news_topics)
         }
+    }
+
+    /** Type a topic of your own: anything Google News can search. */
+    private fun addTopic() {
+        val field = EditText(this).apply {
+            id = View.generateViewId()
+            hint = getString(R.string.news_topic_hint)
+            textSize = 14f
+            setTextColor(fg)
+            setHintTextColor(Color.argb(120, Color.red(fg), Color.green(fg), Color.blue(fg)))
+            isSingleLine = true
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_WORDS
+            imeOptions = EditorInfo.IME_ACTION_DONE
+            setPadding(dp(14), 0, dp(14), 0)
+            background = GradientDrawable().apply {
+                cornerRadius = dp(8).toFloat()
+                setStroke(dp(1), Color.argb(80, Color.red(fg), Color.green(fg), Color.blue(fg)))
+            }
+            setOnEditorActionListener { v, _, _ ->
+                val term = v.text.toString().trim()
+                if (term.isNotEmpty()) News.addCustom(prefs, term)
+                getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(windowToken, 0)
+                pickTopics(News.TOPICS.size + News.custom(prefs).size - 1)
+                true
+            }
+        }
+        val top = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(4), 0, 0)
+            addView(field, LinearLayout.LayoutParams(MATCH_PARENT, dp(44)))
+        }
+        showPage(getString(R.string.news_add_topic), emptyList(), top = top) { pickTopics(News.TOPICS.size + News.custom(prefs).size) }
+        field.requestFocus()
     }
 
     private fun navSound(key: Int) = window.decorView.playSoundEffect(when (key) {

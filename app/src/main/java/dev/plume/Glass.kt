@@ -592,6 +592,12 @@ class GlassFrame(context: Context, attrs: AttributeSet?) : FrameLayout(context, 
         val eh = MeasureSpec.makeMeasureSpec(measuredHeight, MeasureSpec.EXACTLY)
         for (i in 0 until childCount) (getChildAt(i) as? GlassView)?.measure(ew, eh)
     }
+
+    /** The glass fills the whole frame, padding included (FrameLayout would inset it by the padding). */
+    override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+        super.onLayout(changed, l, t, r, b)
+        for (i in 0 until childCount) (getChildAt(i) as? GlassView)?.layout(0, 0, r - l, b - t)
+    }
 }
 
 

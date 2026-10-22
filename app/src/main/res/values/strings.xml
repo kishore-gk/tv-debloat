@@ -82,6 +82,10 @@
     <string name="news_briefing_sub">%1$d stories</string>
     <string name="news_read">Read</string>
     <string name="news_follows_weather">Same as weather location</string>
+    <string name="news_add_topic">Add a topic</string>
+    <string name="news_topic_hint">e.g. Formula 1, ISRO, Bengaluru metro</string>
+    <string name="news_add">Add</string>
+    <string name="news_remove">Remove</string>
     <string name="downloading_gallery">Downloading Gallery…</string>
     <string name="gallery">Gallery</string>
     <string name="test_screensaver">Test screensaver</string>
