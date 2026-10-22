@@ -118,6 +118,7 @@ class Backdrop(context: Context, attrs: AttributeSet?) : FrameLayout(context, at
             .withEndAction {
                 if (current === bmp) {
                     prev.setImageDrawable(null) // keep only one picture in memory
+                    drift[1 - i]?.cancel() // and stop zooming the empty layer
                     if (bmp != null) background = null
                 }
             }
