@@ -2730,6 +2730,7 @@ class MainActivity : Activity() {
         }
         playGlass.clipToOutline = true
         setupSheet()
+        dockLayout()
         dockSize(0f)
         lens = FocusLens(this, tileRadius() + dp(LENS_PAD))
         findViewById<FrameLayout>(R.id.lensLayer).addView(lens, 0, FrameLayout.LayoutParams(0, 0))
@@ -3064,7 +3065,7 @@ class MainActivity : Activity() {
         if (dockOpen == to) return
         dockAnim?.cancel()
         dockAnim = ValueAnimator.ofFloat(dockOpen.coerceAtLeast(0f), to).apply {
-            duration = 340
+            duration = 420
             interpolator = Motion.EMPHASIZED
             addUpdateListener { dockSize(it.animatedValue as Float) }
             start()
@@ -3073,51 +3074,52 @@ class MainActivity : Activity() {
     }
 
     /**
-     * [f] 0 = resting, 1 = open. Resting, the dock loses the name line and most of its padding and is scaled down
-     * from its bottom centre to about 40% of its open height, like the macOS Dock; opening grows it all back.
+     * [f] 0 = resting, 1 = open. Resting, the dock is scaled down from its bottom centre like the macOS Dock;
+     * opening grows it back. Only scale and position change, never layout, so the GPU animates it smoothly; the
+     * glass behind it realigns once it settles.
      */
     private fun dockSize(f: Float) {
         if (dockAnim?.isRunning != true) dockOpen = f
-        fun lerp(a: Int, b: Int) = dp(a) + ((dp(b) - dp(a)) * f).toInt()
-        // Logos only, so open just means room for the lens: the same glass above and below the tiles either way.
-        findViewById<View>(R.id.appScroll).setPadding(dp(24), lerp(DOCK_REST_PAD, DOCK_OPEN_PAD), dp(24), lerp(DOCK_REST_PAD, DOCK_OPEN_PAD))
+        val scale = DOCK_REST_SCALE + (1f - DOCK_REST_SCALE) * f
+        dock.pivotX = dock.width / 2f
+        dock.pivotY = dock.height.toFloat()
+        dock.scaleX = scale
+        dock.scaleY = scale
+        shelfSize(f)
+        if (f == 0f || f == 1f) glass.invalidate()
+    }
+
+    /** The dock's one fixed layout: logos only, the same glass above and below, room for the lens. */
+    private fun dockLayout() {
+        findViewById<View>(R.id.appScroll).setPadding(dp(24), dp(DOCK_OPEN_PAD), dp(24), dp(DOCK_OPEN_PAD))
         for (id in intArrayOf(R.id.rowLabel, R.id.nameRow)) {
             (findViewById<View>(id).layoutParams as LinearLayout.LayoutParams).apply { height = 0; topMargin = 0 }
         }
-        shelfSize(f)
-        val scale = DOCK_REST_SCALE + (1f - DOCK_REST_SCALE) * f
-        dock.scaleX = scale
-        dock.scaleY = scale
-        dock.pivotX = dock.width / 2f
-        dock.pivotY = dock.height.toFloat()
-        dock.post { dock.pivotX = dock.width / 2f; dock.pivotY = dock.height.toFloat() } // after the new height lays out
-        glass.invalidate() // its picture is lined up with the screen, which moves as the dock scales
+        // Pivots need the laid-out size; set them (and line the glass up) whenever it changes.
+        dock.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+            dock.pivotX = dock.width / 2f
+            dock.pivotY = dock.height.toFloat()
+            glass.invalidate()
+        }
+        shelf.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> shelf.pivotY = shelf.height.toFloat() }
     }
 
     /**
-     * The shelf answers the dock: with the dock resting it is at full size, its lines spaced generously and its
-     * bottom reaching down into the room the dock left; as the dock opens it shrinks towards its pinned top-left
-     * corner and its spacing tightens, so it always clears the dock. [f] as in [dockSize].
+     * The shelf answers the dock: full size while the dock rests, and as the dock opens it shrinks towards its
+     * bottom-left corner and rises by exactly what the dock grows, so the Resume row keeps its distance above the
+     * dock. Transform only, like the dock. [f] as in [dockSize].
      */
     private fun shelfSize(f: Float) {
-        fun gap(open: Int, rest: Int) = dp(rest) + ((dp(open) - dp(rest)) * f).toInt()
         val s = 1f - (1f - SHELF_OPEN_SCALE) * f
-        // Scaled from its bottom-left corner, and lifted by exactly what the dock grows, so the Resume row keeps the
-        // same distance above the dock.
         shelf.pivotX = 0f
         shelf.pivotY = shelf.height.toFloat()
         shelf.scaleX = s
         shelf.scaleY = s
         shelf.translationY = -(dockOpenHeight() - dockRestHeight()) * f
-        for ((id, open, rest) in listOf(
-            Triple(R.id.shelfTitle, 2, 4), Triple(R.id.shelfProgress, 6, 10), Triple(R.id.shelfSub, 4, 6),
-        )) (findViewById<View>(id).layoutParams as ViewGroup.MarginLayoutParams).topMargin = gap(open, rest)
-        ((findViewById<View>(R.id.playGlass).parent as View).layoutParams as ViewGroup.MarginLayoutParams).topMargin = gap(10, 14)
-        shelf.requestLayout()
     }
 
     /** What the dock takes up from the bottom of the content area, resting (small, scaled) and open. */
-    private fun dockRestHeight() = ((dp(DOCK_REST_PAD) * 2 + tileWidth() * 9 / 16) * DOCK_REST_SCALE).toInt()
+    private fun dockRestHeight() = (dockOpenHeight() * DOCK_REST_SCALE).toInt()
     private fun dockOpenHeight() = dp(DOCK_OPEN_PAD) * 2 + tileWidth() * 9 / 16
 
     /**
@@ -3365,7 +3367,7 @@ class MainActivity : Activity() {
         const val SHELF_OPEN_SCALE = 0.74f // shelf size while the dock is open
         const val DOCK_OPEN_PAD = 22 // dp around the tiles with the dock open: room for the lens (LENS_PAD) and its glow
         const val DOCK_REST_PAD = 12 // dp of glass above and below the tiles while the dock rests
-        const val DOCK_REST_SCALE = 0.62f // resting dock size; with the smaller padding, ~40% of the open height
+        const val DOCK_REST_SCALE = 0.55f // resting dock size; with the smaller padding, ~40% of the open height
         val SHELF_KEYS = setOf(KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT)
         const val HERO_MIN_WIDTH = 1280
         const val HERO_TRIES = 4
