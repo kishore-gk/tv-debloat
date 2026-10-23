@@ -6,8 +6,8 @@ import android.media.SoundPool
 import android.provider.Settings
 
 /**
- * Plume's own interface sounds, in place of Android's stock click: a soft short tick to move, a rounder tock to
- * select, and a muted thud at the end of a row. Quiet on purpose. Respects the TV's "Sound effects" setting.
+ * Plume's own interface sounds, in place of Android's stock click: a crisp glass tick to move, a rising pop to
+ * select, and a firm double knock at the end of a row. Respects the TV's "Sound effects" setting.
  * (The sounds are generated, not recordings: res/raw/nav_*.wav.)
  */
 internal object Sounds {
@@ -34,13 +34,13 @@ internal object Sounds {
     }
 
     /** Focus moved. */
-    fun move() = play(tick, 0.7f)
+    fun move() = play(tick, 0.8f)
 
     /** OK pressed on something. */
-    fun select() = play(tock, 0.75f)
+    fun select() = play(tock, 0.85f)
 
     /** Pressed past the end of a row or list. */
-    fun edge() = play(thud, 0.6f)
+    fun edge() = play(thud, 1f)
 
     private fun play(id: Int, volume: Float) {
         val p = pool ?: return
