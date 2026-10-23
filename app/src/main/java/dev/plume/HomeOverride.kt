@@ -13,6 +13,9 @@ import android.provider.Settings
 import android.view.KeyEvent
 import android.view.accessibility.AccessibilityEvent
 
+/** On the Home intent when HomeOverride only covers Google TV's home (not a Home press). */
+internal const val EXTRA_COVER = "dev.plume.cover"
+
 /**
  * Google TV's launcher has to stay enabled (disabling it boot-loops the TV), so we take the Home key before
  * the system sees it and open our home directly; Google TV never flashes up. Holding Home still opens the
@@ -48,9 +51,9 @@ class HomeOverride : AccessibilityService() {
     private fun coverGoogleHome() {
         val front = frontApp()
         when {
-            front == GOOGLE_TV -> goHome()
+            front == GOOGLE_TV -> goHome(cover = true)
             // Nothing readable yet, right after a boot: the TV is starting on its home screen, so start on Plume's.
-            front == null && SystemClock.elapsedRealtime() < BOOT_WINDOW_MS -> goHome()
+            front == null && SystemClock.elapsedRealtime() < BOOT_WINDOW_MS -> goHome(cover = true)
         }
     }
 
@@ -82,7 +85,7 @@ class HomeOverride : AccessibilityService() {
     override fun onAccessibilityEvent(e: AccessibilityEvent) {
         if (e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && e.packageName == GOOGLE_TV &&
             e.className?.contains("dashboard", ignoreCase = true) != true
-        ) goHome()
+        ) goHome(cover = true)
     }
 
     /** The app most recently brought to the front in the last few minutes, or null if the log can't be read. */
@@ -101,8 +104,12 @@ class HomeOverride : AccessibilityService() {
         null
     }
 
-    // Marked as Home so the setup check can tell it from Plume being opened from the apps list.
-    private fun goHome() = startActivity(Intent(this, MainActivity::class.java).addCategory(Intent.CATEGORY_HOME).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    /**
+     * Marked as Home so the setup check can tell it from Plume being opened from the apps list. [cover]: not a Home
+     * press, just keeping Google TV's home from showing (after a boot or screen on), so Plume leaves its focus alone.
+     */
+    private fun goHome(cover: Boolean = false) = startActivity(Intent(this, MainActivity::class.java).addCategory(Intent.CATEGORY_HOME)
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK).apply { if (cover) putExtra(EXTRA_COVER, true) })
 
     override fun onInterrupt() {}
 

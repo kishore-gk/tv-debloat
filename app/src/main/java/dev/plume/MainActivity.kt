@@ -727,6 +727,9 @@ class MainActivity : Activity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         if (intent.action == UPDATE_STATUS) return installStatus(intent)
+        // Brought to the front over Google TV's home by HomeOverride, not a Home press: you may already be using
+        // the remote here (it happens for a few seconds after the TV starts), so nothing moves.
+        if (intent.getBooleanExtra(EXTRA_COVER, false)) return
         if (homeTest != 0 && intent.hasCategory(Intent.CATEGORY_HOME)) { // the Home press reached us: setup works
             homeTest = 0
             return donePopup()
@@ -1588,7 +1591,8 @@ class MainActivity : Activity() {
         val focusedTag = currentFocus?.tag
         // Rebuilds can happen in the background (an app or HDMI device added); only take focus if the row had it.
         // First fill after a cold start: Android already gave the default focus to the top bar's first icon.
-        val firstFill = appRow.childCount == 0 && currentFocus?.parent === wifi.parent
+        // Not once the remote has been used: the apps can arrive seconds after start, when you're already elsewhere.
+        val firstFill = appRow.childCount == 0 && currentFocus?.parent === wifi.parent && lastKeyAt == 0L
         val takeFocus = currentFocus == null || currentFocus?.parent === appRow || firstFill
         val gap = dp(DOCK_GAP)
         // DOCK_FIT tiles exactly fill the glass panel (content width, plus the dock's 16 dp overhang each side, minus
