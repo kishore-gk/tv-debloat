@@ -193,6 +193,21 @@ internal fun hiResArt(u: String, w: Int): List<String> {
     return out.toList()
 }
 
+/**
+ * TV finished booting: open Plume's home. Android lets it start from the background because the Home service is
+ * bound; if that service isn't up yet, the service itself covers Google TV's home when it starts.
+ */
+class Booted : BroadcastReceiver() {
+    override fun onReceive(c: Context, i: Intent) {
+        if (i.action != Intent.ACTION_BOOT_COMPLETED) return
+        c.getSharedPreferences("home", Context.MODE_PRIVATE).edit().remove("home_off").apply()
+        try {
+            c.startActivity(Intent(c, MainActivity::class.java).addCategory(Intent.CATEGORY_HOME).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        } catch (e: Exception) {
+        }
+    }
+}
+
 /** Allowed to start an activity from the background because the Home button service is bound. */
 class Updated : BroadcastReceiver() {
     override fun onReceive(c: Context, i: Intent) {
