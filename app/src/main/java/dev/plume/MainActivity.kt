@@ -2684,6 +2684,16 @@ class MainActivity : Activity() {
         shelf = findViewById(R.id.shelf)
         dock = findViewById(R.id.dock)
         findViewById<View>(R.id.scrim).visibility = View.GONE // no vignette: the picture stays as the glass sees it
+        // Left/Right on the shelf only turns its pages; focus must never drop into the dock on its own. If something
+        // takes it there right after a Left/Right, give it back (and log who did, to find the cause).
+        window.decorView.viewTreeObserver.addOnGlobalFocusChangeListener { old, new ->
+            if (old === shelf && new != null && new !== shelf && lastDir != 0 && shelf.visibility == View.VISIBLE &&
+                SystemClock.uptimeMillis() - lastKeyAt < 800
+            ) {
+                android.util.Log.w("PlumeFocus", "shelf lost focus to $new after Left/Right; taking it back", Throwable())
+                ui.post { if (shelf.visibility == View.VISIBLE) shelf.requestFocus() }
+            }
+        }
         softShadows()
         // The dock: blurred copy of the backdrop at the back, the apps on top, a lit rim in front.
         val radius = dpf(28f)
