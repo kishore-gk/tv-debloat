@@ -13,8 +13,8 @@ import android.provider.Settings
 import android.view.KeyEvent
 import android.view.accessibility.AccessibilityEvent
 
-/** On the Home intent when HomeOverride only covers Google TV's home (not a Home press). */
-internal const val EXTRA_COVER = "dev.plume.cover"
+/** On the Home intent when it comes from a Home press (not the boot or HomeOverride covering Google TV's home). */
+internal const val EXTRA_PRESS = "dev.plume.press"
 
 /**
  * Google TV's launcher has to stay enabled (disabling it boot-loops the TV), so we take the Home key before
@@ -51,9 +51,9 @@ class HomeOverride : AccessibilityService() {
     private fun coverGoogleHome() {
         val front = frontApp()
         when {
-            front == GOOGLE_TV -> goHome(cover = true)
+            front == GOOGLE_TV -> goHome()
             // Nothing readable yet, right after a boot: the TV is starting on its home screen, so start on Plume's.
-            front == null && SystemClock.elapsedRealtime() < BOOT_WINDOW_MS -> goHome(cover = true)
+            front == null && SystemClock.elapsedRealtime() < BOOT_WINDOW_MS -> goHome()
         }
     }
 
@@ -77,7 +77,7 @@ class HomeOverride : AccessibilityService() {
         if (e.keyCode != KeyEvent.KEYCODE_HOME) return false
         // Decided on release, by how long it was held: this TV's remote doesn't reliably send key repeats.
         if (e.action == KeyEvent.ACTION_UP && !e.isCanceled) {
-            if (e.eventTime - e.downTime < LONG_PRESS_MS) goHome() else performGlobalAction(GLOBAL_ACTION_NOTIFICATIONS)
+            if (e.eventTime - e.downTime < LONG_PRESS_MS) goHome(press = true) else performGlobalAction(GLOBAL_ACTION_NOTIFICATIONS)
         }
         return true
     }
@@ -85,7 +85,7 @@ class HomeOverride : AccessibilityService() {
     override fun onAccessibilityEvent(e: AccessibilityEvent) {
         if (e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && e.packageName == GOOGLE_TV &&
             e.className?.contains("dashboard", ignoreCase = true) != true
-        ) goHome(cover = true)
+        ) goHome()
     }
 
     /** The app most recently brought to the front in the last few minutes, or null if the log can't be read. */
@@ -105,11 +105,12 @@ class HomeOverride : AccessibilityService() {
     }
 
     /**
-     * Marked as Home so the setup check can tell it from Plume being opened from the apps list. [cover]: not a Home
-     * press, just keeping Google TV's home from showing (after a boot or screen on), so Plume leaves its focus alone.
+     * Marked as Home so the setup check can tell it from Plume being opened from the apps list. [press]: you pressed
+     * Home (Plume then goes back to the start of the dock). Otherwise it only keeps Google TV's home from showing
+     * (after a boot or the screen coming on), and Plume leaves its focus where you put it.
      */
-    private fun goHome(cover: Boolean = false) = startActivity(Intent(this, MainActivity::class.java).addCategory(Intent.CATEGORY_HOME)
-        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK).apply { if (cover) putExtra(EXTRA_COVER, true) })
+    private fun goHome(press: Boolean = false) = startActivity(Intent(this, MainActivity::class.java).addCategory(Intent.CATEGORY_HOME)
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK).apply { if (press) putExtra(EXTRA_PRESS, true) })
 
     override fun onInterrupt() {}
 

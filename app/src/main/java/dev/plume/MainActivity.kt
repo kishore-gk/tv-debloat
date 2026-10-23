@@ -727,13 +727,14 @@ class MainActivity : Activity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         if (intent.action == UPDATE_STATUS) return installStatus(intent)
-        // Brought to the front over Google TV's home by HomeOverride, not a Home press: you may already be using
-        // the remote here (it happens for a few seconds after the TV starts), so nothing moves.
-        if (intent.getBooleanExtra(EXTRA_COVER, false)) return
         if (homeTest != 0 && intent.hasCategory(Intent.CATEGORY_HOME)) { // the Home press reached us: setup works
             homeTest = 0
             return donePopup()
         }
+        // Only a Home press starts over. Plume is also brought forward without one: when the TV finishes starting
+        // (Booted, often 5 to 10 s in) and whenever Google TV's home is covered. You may already be using the
+        // remote then, so nothing moves.
+        if (!intent.getBooleanExtra(EXTRA_PRESS, false)) return
         if (editing) endEdit()
         closePopup(restore = false)
         if (settingsScrim.visibility == View.VISIBLE) closeLauncherSettings()
@@ -2837,6 +2838,10 @@ class MainActivity : Activity() {
             ) {
                 android.util.Log.w("PlumeFocus", "shelf lost focus to $new after Left/Right; taking it back", Throwable())
                 ui.post { if (shelf.visibility == View.VISIBLE) shelf.requestFocus() }
+            }
+            // Focus arriving in the dock without a key press just before: log who moved it (adb logcat -s PlumeFocus).
+            if (new?.parent === appRow && old != null && old.parent !== appRow && SystemClock.uptimeMillis() - lastKeyAt > 1000) {
+                android.util.Log.w("PlumeFocus", "focus moved to the dock without a key, from $old", Throwable())
             }
         }
         softShadows()
