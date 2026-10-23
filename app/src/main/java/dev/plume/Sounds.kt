@@ -6,8 +6,8 @@ import android.media.SoundPool
 import android.provider.Settings
 
 /**
- * Plume's own interface sounds, in place of Android's stock click: a crisp glass tick to move, a rising pop to
- * select, and a firm double knock at the end of a row. Respects the TV's "Sound effects" setting.
+ * Plume's own interface sounds, in place of Android's stock click: a soft, warm synth blip to move, a blooming fifth to
+ * select, and a low double pulse at the end of a row, each with a short dark reverb. Respects the TV's "Sound effects" setting.
  * (The sounds are generated, not recordings: res/raw/nav_*.wav.)
  */
 internal object Sounds {
@@ -21,7 +21,7 @@ internal object Sounds {
         if (pool != null) return
         app = c.applicationContext
         pool = SoundPool.Builder()
-            .setMaxStreams(3)
+            .setMaxStreams(5) // the reverb tails overlap when you move quickly
             .setAudioAttributes(AudioAttributes.Builder()
                 .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
