@@ -29,7 +29,7 @@ Built for, and tested on, a TCL 55" Smart TV Pro (Google TV, Android TV OS 14, 1
 - **News.** A newspaper-style screen (black page, serif type): about 40 country editions, built-in sections,
   your own topics, local news for your city. Hold OK on a section to move or hide it. It also opens after the
   home screen sits idle (30 seconds by default, adjustable or off) and works as the screensaver. A morning
-  briefing card can lead Continue Watching between 5 and 10 am. Sources: Google News RSS, with descriptions
+  briefing card can lead Continue Watching from 5 to 11 am. Sources: Google News RSS, with descriptions
   and pictures filled in from Bing News and the publisher's page.
 - **Calendar** (OK on the date). A month grid with holidays and festivals; the weeks scroll between months.
   Holidays come from Google's public holiday calendar for the TV's country (one small file every two weeks),
