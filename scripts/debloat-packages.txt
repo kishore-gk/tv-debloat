@@ -1,0 +1,28 @@
+# What 03_debloat.sh turns off (and 03_restore.sh turns back on).
+# One per line: "disable <package>" or "remove <package>", then a comment. Lines starting with # are skipped.
+# disable = pm disable-user (the app stays installed, switched off)
+# remove  = pm uninstall --user 0 (removed for this user only; the TV's system copy stays, so it can come back)
+# Checked on a TCL 55" Smart TV Pro (Google TV, Android TV OS 14). Other models: check yours has each one.
+
+# Ads, promos and the shop's demo mode
+disable android.autoinstalls.config.google.gtvpai   # Google TV's "pre-installed apps" pusher: installs promoted apps
+disable com.tcl.waterfall.overseas                  # TCL promotional content feed
+disable com.tcl.channelplus                         # TCL Channel: free ad-supported channels
+disable com.tcl.messagebox                          # TCL pop-up messages and promotions
+disable com.tcl.esticker                            # In-store "e-sticker" overlay
+disable com.tcl.exhibit                             # Store demo mode
+disable com.tcl.hotelmenu                           # Hotel mode menu
+disable com.tcl.ocean.instructions                  # On-screen instruction videos
+disable com.tcl.repairguide                         # Repair guide
+disable com.tcl.logkit                              # TCL log collection
+
+# Google extras
+disable com.google.android.play.games               # Play Games
+disable com.google.android.feedback                 # Google feedback reporter
+
+# Personal choice: keep any you use (delete or comment out the line)
+disable com.tcl.smartalexa                          # Alexa on the TV
+disable com.tcl.gamebar                             # TCL Game Bar overlay
+disable com.google.android.youtube.tvmusic          # YouTube Music
+disable com.google.android.apps.tv.dreamx           # Google TV ambient screensaver (Plume has its own)
+remove  com.mxtech.videoplayer.television           # MX Player, preinstalled

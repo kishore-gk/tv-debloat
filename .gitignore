@@ -1,0 +1,8 @@
+# Your settings and everything personal: TV address, reports, screenshots, downloads.
+config.sh
+_local/
+
+# Build output
+*.apk
+*.zip
+.DS_Store
