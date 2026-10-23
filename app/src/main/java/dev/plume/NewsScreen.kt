@@ -21,7 +21,6 @@ import android.util.LruCache
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
-import android.view.SoundEffectConstants
 import android.view.View
 import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
@@ -125,6 +124,7 @@ class NewsView(context: Context) : FrameLayout(context) {
     var onAddTopic: (() -> Unit)? = null
 
     init {
+        Sounds.init(context)
         setBackgroundColor(PAPER)
         setPadding(dp(24), dp(22), dp(24), dp(24))
 
@@ -385,7 +385,7 @@ class NewsView(context: Context) : FrameLayout(context) {
         // Holding OK on a section opens its menu (the first repeat of OK means "held"); a plain press acts on release.
         if (ok && onTabs && tabAt < sections.size) {
             if (e.action == KeyEvent.ACTION_DOWN && e.repeatCount == 1) { held = true; openMenu(tabAt) }
-            if (e.action == KeyEvent.ACTION_UP) { if (!held) { onTabs = false; styleFocus(); playSoundEffect(SoundEffectConstants.CLICK) }; held = false }
+            if (e.action == KeyEvent.ACTION_UP) { if (!held) { onTabs = false; styleFocus(); Sounds.select() }; held = false }
             return true
         }
         if (e.action != KeyEvent.ACTION_DOWN || sections.isEmpty()) return true
@@ -394,22 +394,21 @@ class NewsView(context: Context) : FrameLayout(context) {
             e.keyCode == KeyEvent.KEYCODE_DPAD_LEFT -> if (tabAt > 0) pickTab(tabAt - 1) else moved = false
             e.keyCode == KeyEvent.KEYCODE_DPAD_RIGHT -> if (tabAt < sections.size) pickTab(tabAt + 1) else moved = false
             e.keyCode == KeyEvent.KEYCODE_DPAD_UP -> moved = false
-            ok && tabAt == sections.size -> { onAddTopic?.invoke(); moved = false }
+            ok && tabAt == sections.size -> { Sounds.select(); onAddTopic?.invoke(); moved = false }
             else -> { onTabs = false; styleFocus() } // Down
         } else when (e.keyCode) {
             KeyEvent.KEYCODE_DPAD_LEFT -> step(-1)
             KeyEvent.KEYCODE_DPAD_RIGHT -> step(1)
             KeyEvent.KEYCODE_DPAD_UP -> { onTabs = true; tabAt = sec; styleFocus() }
             KeyEvent.KEYCODE_DPAD_DOWN -> moved = false
-            else -> { paused = !paused; moved = false; playSoundEffect(SoundEffectConstants.CLICK) }
+            else -> { paused = !paused; moved = false; Sounds.select() }
         }
-        if (moved) playSoundEffect(when (e.keyCode) {
-            KeyEvent.KEYCODE_DPAD_LEFT -> SoundEffectConstants.NAVIGATION_LEFT
-            KeyEvent.KEYCODE_DPAD_RIGHT -> SoundEffectConstants.NAVIGATION_RIGHT
-            KeyEvent.KEYCODE_DPAD_UP -> SoundEffectConstants.NAVIGATION_UP
-            KeyEvent.KEYCODE_DPAD_DOWN -> SoundEffectConstants.NAVIGATION_DOWN
-            else -> SoundEffectConstants.CLICK
-        })
+        // Plume's own sounds: a tick when something moved, a soft thud at an end, a tock for OK.
+        when {
+            moved && !ok -> Sounds.move()
+            moved -> Sounds.select()
+            e.keyCode in arrows -> Sounds.edge()
+        }
         return true
     }
 
@@ -473,9 +472,10 @@ class NewsView(context: Context) : FrameLayout(context) {
     private fun menuKey(e: KeyEvent, ok: Boolean): Boolean {
         if (e.action != KeyEvent.ACTION_DOWN) { if (ok) held = false; return true }
         when {
-            e.keyCode == KeyEvent.KEYCODE_DPAD_UP && menuAt > 0 -> { menuAt--; playSoundEffect(SoundEffectConstants.NAVIGATION_UP) }
-            e.keyCode == KeyEvent.KEYCODE_DPAD_DOWN && menuAt < menuItems.size - 1 -> { menuAt++; playSoundEffect(SoundEffectConstants.NAVIGATION_DOWN) }
-            ok && !held -> { val act = menuItems[menuAt].second; closeMenu(); playSoundEffect(SoundEffectConstants.CLICK); act() }
+            e.keyCode == KeyEvent.KEYCODE_DPAD_UP && menuAt > 0 -> { menuAt--; Sounds.move() }
+            e.keyCode == KeyEvent.KEYCODE_DPAD_DOWN && menuAt < menuItems.size - 1 -> { menuAt++; Sounds.move() }
+            e.keyCode == KeyEvent.KEYCODE_DPAD_UP || e.keyCode == KeyEvent.KEYCODE_DPAD_DOWN -> Sounds.edge()
+            ok && !held -> { val act = menuItems[menuAt].second; closeMenu(); Sounds.select(); act() }
             e.keyCode == KeyEvent.KEYCODE_BACK -> closeMenu()
         }
         styleMenu()

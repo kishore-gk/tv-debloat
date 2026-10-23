@@ -59,7 +59,6 @@ import android.text.style.BulletSpan
 import android.util.LruCache
 import android.view.Gravity
 import android.view.KeyEvent
-import android.view.SoundEffectConstants
 import android.view.View
 import android.view.ViewGroup
 import android.view.Window
@@ -302,6 +301,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
+        Sounds.init(this)
         prefs.edit().remove("dbg").apply() // left over from the benchmark switches
         // The backdrop covers the whole window: no window background painted under it on every frame.
         window.setBackgroundDrawable(null)
@@ -1676,6 +1676,11 @@ class MainActivity : Activity() {
                 currentFocus?.isPressed = false
                 return true
             }
+            // A press: Plume's own "tock", and Android's stock click silenced for this view.
+            if (e.action == KeyEvent.ACTION_UP) currentFocus?.takeIf { it.isClickable && it !is EditText }?.let {
+                it.isSoundEffectsEnabled = false
+                Sounds.select()
+            }
         }
         // The settings panel is a vertical list: Left/Right step a row's value (its tag, see settingsRow) and
         // never leak focus to the home screen behind it. The PIN boxes and the city search box use them themselves.
@@ -1683,7 +1688,10 @@ class MainActivity : Activity() {
             (e.keyCode == KeyEvent.KEYCODE_DPAD_LEFT || e.keyCode == KeyEvent.KEYCODE_DPAD_RIGHT)
         ) {
             @Suppress("UNCHECKED_CAST")
-            if (e.action == KeyEvent.ACTION_DOWN) (currentFocus?.tag as? (Int) -> Unit)?.invoke(if (e.keyCode == KeyEvent.KEYCODE_DPAD_LEFT) -1 else 1)
+            if (e.action == KeyEvent.ACTION_DOWN) {
+                val step = currentFocus?.tag as? (Int) -> Unit
+                if (step != null) { step(if (e.keyCode == KeyEvent.KEYCODE_DPAD_LEFT) -1 else 1); Sounds.move() } else Sounds.edge()
+            }
             return true
         }
         if (editing && editKey(e, confirm)) return true
@@ -1692,11 +1700,30 @@ class MainActivity : Activity() {
         }
         if (e.action == KeyEvent.ACTION_DOWN && settingsScrim.visibility != View.VISIBLE && allApps.visibility != View.VISIBLE) {
             currentFocus?.let { from -> homeNav(from, e.keyCode)?.let { to ->
-                // Android only plays the navigation click for focus moves it makes; these are ours.
-                if (to !== from || from === shelf && e.keyCode in SHELF_KEYS) navSound(e.keyCode)
+                when {
+                    from === shelf && e.keyCode in SHELF_KEYS -> if (shelfMoved) Sounds.move() else Sounds.edge()
+                    to !== from -> Sounds.move()
+                    e.keyCode in ARROWS -> Sounds.edge() // pressed past the end of a row
+                }
                 to.requestFocus()
                 return true
             } }
+        }
+        // Every other arrow press (the settings panel, the top bar) moves focus here too, so it plays Plume's
+        // tick (or the edge thud) instead of Android's stock click. Text boxes and the PIN keep their arrows.
+        val from = currentFocus
+        if (e.keyCode in ARROWS && from != null && from !is EditText && from !== pinBox) {
+            if (e.action == KeyEvent.ACTION_DOWN) {
+                val dir = when (e.keyCode) {
+                    KeyEvent.KEYCODE_DPAD_LEFT -> View.FOCUS_LEFT
+                    KeyEvent.KEYCODE_DPAD_RIGHT -> View.FOCUS_RIGHT
+                    KeyEvent.KEYCODE_DPAD_UP -> View.FOCUS_UP
+                    else -> View.FOCUS_DOWN
+                }
+                val next = from.focusSearch(dir)
+                if (next != null && next !== from && next.requestFocus(dir)) Sounds.move() else Sounds.edge()
+            }
+            return true
         }
         return super.dispatchKeyEvent(e)
     }
@@ -2796,8 +2823,12 @@ class MainActivity : Activity() {
         }
     }
 
+    /** Whether the last Left/Right on the shelf turned the page (false: it was already at the end). */
+    private var shelfMoved = false
+
     private fun shelfStep(d: Int) {
         val next = shelfAt + d
+        shelfMoved = next in watchList.indices
         if (next !in watchList.indices) { // at the end: a small bump, like tvOS
             shelf.animate().translationX(d * dpf(10f)).setDuration(90).setInterpolator(Motion.STANDARD)
                 .withEndAction { shelf.animate().translationX(0f).setDuration(260).setInterpolator(Motion.EMPHASIZED).start() }
@@ -3051,8 +3082,9 @@ class MainActivity : Activity() {
             else -> return null
         }
         val from = currentFocus ?: return null
-        val next = android.view.FocusFinder.getInstance().findNextFocus(allAppsGrid, from, dir) ?: return true // edge: stay
-        navSound(key)
+        val next = android.view.FocusFinder.getInstance().findNextFocus(allAppsGrid, from, dir)
+            ?: return true.also { Sounds.edge() } // edge: stay
+        Sounds.move()
         next.requestFocus()
         return true
     }
@@ -3181,12 +3213,6 @@ class MainActivity : Activity() {
         field.requestFocus()
     }
 
-    private fun navSound(key: Int) = window.decorView.playSoundEffect(when (key) {
-        KeyEvent.KEYCODE_DPAD_LEFT -> SoundEffectConstants.NAVIGATION_LEFT
-        KeyEvent.KEYCODE_DPAD_RIGHT -> SoundEffectConstants.NAVIGATION_RIGHT
-        KeyEvent.KEYCODE_DPAD_UP -> SoundEffectConstants.NAVIGATION_UP
-        else -> SoundEffectConstants.NAVIGATION_DOWN
-    })
 
     /**
      * The dock rests compact, the same glass above and below the tiles. With focus in it, it grows upwards to make
@@ -3479,6 +3505,7 @@ class MainActivity : Activity() {
         const val DOCK_REST_PAD = 12 // dp of glass above and below the tiles while the dock rests
         const val DOCK_REST_SCALE = 0.55f // resting dock size; with the smaller padding, ~40% of the open height
         val SHELF_KEYS = setOf(KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT)
+        val ARROWS = setOf(KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN)
         const val HERO_MIN_WIDTH = 1280
         const val HERO_TRIES = 4
         const val FOCUS_SCALE = 1.06f
