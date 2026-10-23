@@ -317,6 +317,11 @@ class MainActivity : Activity() {
         applyTheme()
         setupGlass()
         loadWallpaper()
+        // A cold start lands on the dock. Its apps can take seconds to load on this TV, so until they're there the
+        // empty row itself holds the focus (Android would otherwise put it on the top-left button, and it would
+        // then jump to the dock when the apps arrived). Move away meanwhile and it stays where you put it.
+        appRow.isFocusable = true
+        appRow.requestFocus()
 
         // Top bar: network, All apps, Android settings, launcher settings. Round, lit on focus.
         for ((id, action) in listOf<Pair<Int, () -> Unit>>(
@@ -1594,7 +1599,8 @@ class MainActivity : Activity() {
         // First fill after a cold start: Android already gave the default focus to the top bar's first icon.
         // Not once the remote has been used: the apps can arrive seconds after start, when you're already elsewhere.
         val firstFill = appRow.childCount == 0 && currentFocus?.parent === wifi.parent && lastKeyAt == 0L
-        val takeFocus = currentFocus == null || currentFocus?.parent === appRow || firstFill
+        val holding = currentFocus === appRow // the empty row's stand-in focus from a cold start (see onCreate)
+        val takeFocus = currentFocus == null || currentFocus?.parent === appRow || holding || firstFill
         val gap = dp(DOCK_GAP)
         // DOCK_FIT tiles exactly fill the glass panel (content width, plus the dock's 16 dp overhang each side, minus
         // its 24 dp inner padding each side), 16:9 like Android TV app banners.
@@ -1624,6 +1630,7 @@ class MainActivity : Activity() {
         showNames()
         alignRow()
         if (takeFocus) (tiles.firstOrNull { it.tag == focusedTag } ?: tiles[0]).requestFocus()
+        appRow.isFocusable = false // the tiles take it from here (after they have it, so it never hops elsewhere)
         if (!prefs.getBoolean("tip_move", false)) {
             prefs.edit().putBoolean("tip_move", true).apply()
             Toast.makeText(this, getString(R.string.tip_move), Toast.LENGTH_LONG).show()
@@ -2840,7 +2847,7 @@ class MainActivity : Activity() {
                 ui.post { if (shelf.visibility == View.VISIBLE) shelf.requestFocus() }
             }
             // Focus arriving in the dock without a key press just before: log who moved it (adb logcat -s PlumeFocus).
-            if (new?.parent === appRow && old != null && old.parent !== appRow && SystemClock.uptimeMillis() - lastKeyAt > 1000) {
+            if (new?.parent === appRow && old != null && old !== appRow && old.parent !== appRow && SystemClock.uptimeMillis() - lastKeyAt > 1000) {
                 android.util.Log.w("PlumeFocus", "focus moved to the dock without a key, from $old", Throwable())
             }
         }
