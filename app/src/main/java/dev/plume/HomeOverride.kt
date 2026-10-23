@@ -40,9 +40,13 @@ class HomeOverride : AccessibilityService() {
         for (ms in longArrayOf(600L, 1800L, 4000L)) ui.postDelayed({ coverGoogleHome() }, ms)
     }
 
-    /** If Google TV's home is in front, Plume goes over it. Only the front app's name is read, nothing else. */
+    /**
+     * If Google TV's home is in front, Plume goes over it. The front app comes from Android's usage log (the app
+     * most recently brought forward), not from the screen: reading window content stops this TV from starting
+     * the service at all.
+     */
     private fun coverGoogleHome() {
-        val front = try { rootInActiveWindow?.packageName?.toString() } catch (e: Exception) { null }
+        val front = frontApp()
         when {
             front == GOOGLE_TV -> goHome()
             // Nothing readable yet, right after a boot: the TV is starting on its home screen, so start on Plume's.
@@ -79,6 +83,22 @@ class HomeOverride : AccessibilityService() {
         if (e.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && e.packageName == GOOGLE_TV &&
             e.className?.contains("dashboard", ignoreCase = true) != true
         ) goHome()
+    }
+
+    /** The app most recently brought to the front in the last few minutes, or null if the log can't be read. */
+    private fun frontApp(): String? = try {
+        val usage = getSystemService(android.app.usage.UsageStatsManager::class.java)
+        val now = System.currentTimeMillis()
+        val events = usage.queryEvents(now - 5 * 60_000L, now)
+        val e = android.app.usage.UsageEvents.Event()
+        var last: String? = null
+        while (events.hasNextEvent()) {
+            events.getNextEvent(e)
+            if (e.eventType == android.app.usage.UsageEvents.Event.ACTIVITY_RESUMED) last = e.packageName
+        }
+        last
+    } catch (e: Exception) {
+        null
     }
 
     // Marked as Home so the setup check can tell it from Plume being opened from the apps list.

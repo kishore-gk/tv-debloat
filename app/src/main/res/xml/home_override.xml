@@ -4,7 +4,7 @@
     android:packageNames="com.google.android.apps.tv.launcherx"
     android:accessibilityFeedbackType="feedbackGeneric"
     android:notificationTimeout="0"
-    android:canRetrieveWindowContent="true"
+    android:canRetrieveWindowContent="false"
     android:canRequestFilterKeyEvents="true"
     android:accessibilityFlags="flagRequestFilterKeyEvents"
     android:description="@string/override_desc" />
