@@ -1,0 +1,412 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Sized in dp for a 960x540dp TV canvas (1080p and 4K both map to it). -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@null">
+
+    <!-- Unused in the glass layout (the backdrop shows the wallpaper); kept for the wallpaper code's id. -->
+    <ImageView
+        android:id="@+id/wallpaper"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:importantForAccessibility="no"
+        android:visibility="gone" />
+
+    <!-- Full screen: the focused Continue Watching artwork, or the wallpaper when there's nothing to continue. -->
+    <dev.plume.Backdrop
+        android:id="@+id/backdrop"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <!-- Darkening so white text reads on any picture (drawable set in code). -->
+    <View
+        android:id="@+id/scrim"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:importantForAccessibility="no" />
+
+    <FrameLayout
+        android:id="@+id/content"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:clipChildren="false"
+        android:clipToPadding="false"
+        android:paddingStart="24dp"
+        android:paddingTop="24dp"
+        android:paddingEnd="24dp"
+        android:paddingBottom="24dp">
+        <!-- 24 dp all round: about 2.5% of the width and 4% of the height, the same on every edge. -->
+
+        <!-- Top bar: small glass buttons on the left, the clock large on the right. -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top"
+            android:clipChildren="false"
+            android:clipToPadding="false"
+            android:orientation="horizontal">
+
+            <!-- Glass capsule for the buttons (blur added in code); padding is room for the focused one to grow. -->
+            <dev.plume.GlassFrame
+                android:id="@+id/topGlass"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="0dp">
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:clipChildren="false"
+                android:clipToPadding="false"
+                android:orientation="horizontal"
+                android:padding="6dp">
+
+                <ImageView
+                    android:id="@+id/wifi"
+                    android:layout_width="36dp"
+                    android:layout_height="36dp"
+                    android:contentDescription="@string/network_settings"
+                    android:focusable="true"
+                    android:padding="9dp"
+                    android:src="@drawable/ic_wifi" />
+
+                <ImageView
+                    android:id="@+id/allAppsButton"
+                    android:layout_width="36dp"
+                    android:layout_height="36dp"
+                    android:layout_marginStart="10dp"
+                    android:contentDescription="@string/all_apps"
+                    android:focusable="true"
+                    android:padding="10dp"
+                    android:src="@drawable/ic_apps" />
+
+                <ImageView
+                    android:id="@+id/systemSettings"
+                    android:layout_width="36dp"
+                    android:layout_height="36dp"
+                    android:layout_marginStart="10dp"
+                    android:contentDescription="@string/settings"
+                    android:focusable="true"
+                    android:padding="9dp"
+                    android:src="@drawable/ic_settings" />
+
+                <ImageView
+                    android:id="@+id/launcherSettings"
+                    android:layout_width="36dp"
+                    android:layout_height="36dp"
+                    android:layout_marginStart="10dp"
+                    android:contentDescription="@string/plume_settings"
+                    android:focusable="true"
+                    android:padding="9dp"
+                    android:src="@drawable/ic_tune" />
+            </LinearLayout>
+            </dev.plume.GlassFrame>
+
+            <View
+                android:layout_width="0dp"
+                android:layout_height="1dp"
+                android:layout_weight="1" />
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:clipChildren="false"
+                android:clipToPadding="false"
+                android:gravity="end"
+                android:orientation="vertical">
+
+                <!-- iOS lock screen order: the date, then the time; coloured from the artwork (see tintTexts). -->
+                <dev.plume.TintClock
+                    android:id="@+id/date"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="3dp"
+                    android:fontFamily="sans-serif-medium"
+                    android:format12Hour="EEEE d MMMM"
+                    android:format24Hour="EEEE d MMMM"
+                    android:includeFontPadding="false"
+                    android:textSize="19sp" />
+
+                <dev.plume.TintClock
+                    android:id="@+id/clock"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:fontFamily="sans-serif-medium"
+                    android:format12Hour="h:mm"
+                    android:format24Hour="HH:mm"
+                    android:includeFontPadding="false"
+                    android:layout_marginTop="-2dp"
+                    android:layout_marginBottom="-8dp"
+                    android:letterSpacing="-0.03"
+                    android:textSize="76sp" />
+
+
+                <!-- "24° Clear · Bengaluru". Off unless turned on in launcher settings. -->
+                <dev.plume.TintText
+                    android:id="@+id/weather"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="0dp"
+                    android:layout_marginEnd="3dp"
+                    android:fontFamily="sans-serif-medium"
+                    android:includeFontPadding="false"
+                    android:maxLines="1"
+                    android:textSize="17sp"
+                    android:visibility="gone" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- Top Shelf: the Continue Watching item on the backdrop. Focusable as one; Left/Right page through. -->
+        <LinearLayout
+            android:id="@+id/shelf"
+            android:layout_width="560dp"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|start"
+            android:clipChildren="false"
+            android:clipToPadding="false"
+            android:focusable="true"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <dev.plume.TintText
+                android:id="@+id/shelfSource"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="sans-serif-medium"
+                android:letterSpacing="0.15"
+                android:maxLines="1"
+                android:textAllCaps="true"
+                android:textSize="12sp" />
+
+            <dev.plume.TintText
+                android:id="@+id/shelfTitle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:ellipsize="end"
+                android:fontFamily="sans-serif-black"
+                android:letterSpacing="-0.02"
+                android:lineSpacingMultiplier="0.92"
+                android:maxLines="2"
+                android:textSize="40sp" />
+
+            <!-- Bar first, then the time left under it. -->
+            <ProgressBar
+                android:id="@+id/shelfProgress"
+                style="@android:style/Widget.ProgressBar.Horizontal"
+                android:layout_width="240dp"
+                android:layout_height="4dp"
+                android:layout_marginTop="10dp"
+                android:max="100" />
+
+            <dev.plume.TintText
+                android:id="@+id/shelfSub"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:fontFamily="sans-serif"
+                android:maxLines="1"
+                android:textSize="16sp" />
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:clipChildren="false"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <!-- Frosted glass capsule (blur added in code). -->
+                <dev.plume.GlassFrame
+                    android:id="@+id/playGlass"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content">
+
+                    <TextView
+                        android:id="@+id/shelfPlay"
+                        android:layout_width="wrap_content"
+                        android:layout_height="36dp"
+                        android:fontFamily="sans-serif-medium"
+                        android:gravity="center"
+                        android:paddingStart="20dp"
+                        android:paddingEnd="22dp"
+                        android:text="@string/resume"
+                        android:textSize="15sp" />
+                </dev.plume.GlassFrame>
+
+                <!-- One dot per item, the current one long (iOS page control). -->
+                <dev.plume.PageDots
+                    android:id="@+id/shelfDots"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center_vertical"
+                    android:layout_marginStart="18dp" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <!-- The dock: apps on a frosted glass panel along the bottom. -->
+        <FrameLayout
+            android:id="@+id/dock"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom"
+            android:layout_marginStart="-16dp"
+            android:layout_marginEnd="-16dp">
+
+            <!-- Only shown while editing the row (it carries the instructions). -->
+            <TextView
+                android:id="@+id/appsTitle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="24dp"
+                android:layout_marginTop="3dp"
+                android:alpha="0.8"
+                android:fontFamily="sans-serif-medium"
+                android:textSize="11sp"
+                android:visibility="gone" />
+
+            <!-- Same snap scrolling as before; padding is room for the focus lift inside the glass. -->
+            <dev.plume.SnapScrollView
+                android:id="@+id/appScroll"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:clipToPadding="false"
+                android:paddingStart="24dp"
+                android:paddingTop="28dp"
+                android:paddingEnd="24dp"
+                android:paddingBottom="8dp"
+                android:scrollbars="none">
+
+                <!-- The focus lens (added in code) sits behind the rows, so it scrolls with them. -->
+                <FrameLayout
+                    android:id="@+id/lensLayer"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:clipChildren="false"
+                    android:clipToPadding="false">
+
+                <LinearLayout
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:clipChildren="false"
+                    android:orientation="vertical">
+
+                    <LinearLayout
+                        android:id="@+id/appRow"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:clipChildren="false"
+                        android:orientation="horizontal" />
+
+                    <!-- Name of the focused app, slid under its tile (tvOS style). -->
+                    <TextView
+                        android:id="@+id/rowLabel"
+                        android:layout_width="200dp"
+                        android:layout_height="22dp"
+                        android:layout_marginTop="18dp"
+                        android:alpha="0"
+                        android:fontFamily="sans-serif-medium"
+                        android:gravity="center"
+                        android:maxLines="1"
+                        android:textSize="13sp" />
+
+                    <!-- "App names: Always": every name under its tile, in place of rowLabel (same space). -->
+                    <LinearLayout
+                        android:id="@+id/nameRow"
+                        android:layout_width="wrap_content"
+                        android:layout_height="22dp"
+                        android:layout_marginTop="18dp"
+                        android:orientation="horizontal"
+                        android:visibility="gone" />
+                </LinearLayout>
+                </FrameLayout>
+            </dev.plume.SnapScrollView>
+        </FrameLayout>
+    </FrameLayout>
+
+    <!-- All apps: hidden until the Apps tile is pressed; Back closes it. -->
+    <ScrollView
+        android:id="@+id/allApps"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:clipChildren="false"
+        android:clipToPadding="false"
+        android:paddingStart="48dp"
+        android:paddingTop="28dp"
+        android:paddingEnd="48dp"
+        android:paddingBottom="28dp"
+        android:scrollbars="none"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:clipChildren="false"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/allAppsTitle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="12dp"
+                android:fontFamily="sans-serif"
+                android:text="@string/all_apps"
+                android:textSize="20sp" />
+
+            <GridLayout
+                android:id="@+id/allAppsGrid"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:clipChildren="false"
+                android:columnCount="6" />
+        </LinearLayout>
+    </ScrollView>
+
+    <!-- Launcher settings: side panel over a dimmed home screen; Back closes it. -->
+    <FrameLayout
+        android:id="@+id/settingsScrim"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#99000000"
+        android:clickable="true"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:id="@+id/settingsPanel"
+            android:layout_width="380dp"
+            android:layout_height="match_parent"
+            android:layout_gravity="end"
+            android:orientation="vertical"
+            android:paddingStart="28dp"
+            android:paddingTop="40dp"
+            android:paddingEnd="48dp"
+            android:paddingBottom="27dp">
+
+            <TextView
+                android:id="@+id/settingsTitle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:fontFamily="sans-serif-medium"
+                android:paddingStart="14dp"
+                android:text="@string/plume_settings"
+                android:textSize="20sp" />
+
+            <!-- Scrolls once the rows outgrow the screen; focus moving down scrolls it along. -->
+            <ScrollView
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_marginTop="16dp"
+                android:layout_weight="1"
+                android:scrollbars="none">
+
+                <LinearLayout
+                    android:id="@+id/settingsList"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical" />
+            </ScrollView>
+        </LinearLayout>
+    </FrameLayout>
+</FrameLayout>
