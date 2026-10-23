@@ -208,4 +208,29 @@
     <string name="section_screensaver">Screensaver</string>
     <string name="section_home">Home button</string>
     <string name="bing_daily">Bing picture of the day</string>
+    <!-- Calendar and weather cards (OK on the date or the weather) -->
+    <string name="cal_today">Today</string>
+    <string name="cal_tomorrow">Tomorrow</string>
+    <string name="cal_yesterday">Yesterday</string>
+    <plurals name="cal_in_days">
+        <item quantity="one">In %d day</item>
+        <item quantity="other">In %d days</item>
+    </plurals>
+    <plurals name="cal_days_ago">
+        <item quantity="one">%d day ago</item>
+        <item quantity="other">%d days ago</item>
+    </plurals>
+    <string name="cal_holiday">Holiday</string>
+    <string name="cal_festival">Festival</string>
+    <string name="cal_this_month">This month</string>
+    <string name="cal_hint">OK  Today</string>
+    <string name="wx_today">Today</string>
+    <string name="wx_now_line">Today  ·  now %1$s, feels like %2$s</string>
+    <string name="wx_loading">Loading the forecast…</string>
+    <string name="wx_failed">Couldn\'t load the forecast. Check the connection.</string>
+    <string name="wx_rain_chance">Rain</string>
+    <string name="wx_wind">Wind</string>
+    <string name="wx_uv">UV</string>
+    <string name="wx_sunrise">Sunrise</string>
+    <string name="wx_sunset">Sunset</string>
 </resources>

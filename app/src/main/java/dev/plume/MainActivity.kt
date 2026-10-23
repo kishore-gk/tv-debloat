@@ -269,6 +269,10 @@ class MainActivity : Activity() {
     private var shelfAt = 0
     private var shelfSwap = 0 // bumps on every page turn, so a late text swap from an older turn is skipped
     private var lastDir = 0
+    private var popup: FrameLayout? = null // the calendar or weather card, over the home screen
+    private var popupCard: PopupCard? = null
+    private var popupFrom: View? = null
+    private var popupGlass: GlassView? = null
     private var lastKeyAt = 0L
     /** Full-screen artwork with its small copy for the glass, by URI. ~8 MB a picture at 1080p. */
     private val heroes = object : LruCache<String, Pair<Bitmap, Bitmap>>(44 * 1024 * 1024) {
@@ -728,6 +732,7 @@ class MainActivity : Activity() {
             return donePopup()
         }
         if (editing) endEdit()
+        closePopup(restore = false)
         if (settingsScrim.visibility == View.VISIBLE) closeLauncherSettings()
         if (allApps.visibility == View.VISIBLE) closeAllApps()
         appRow.getChildAt(0)?.requestFocus()
@@ -1666,6 +1671,15 @@ class MainActivity : Activity() {
         }
         val confirm = e.keyCode == KeyEvent.KEYCODE_DPAD_CENTER || e.keyCode == KeyEvent.KEYCODE_ENTER ||
             e.keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER
+        // A popup card (calendar, weather) takes the remote while it's open; Back closes it.
+        popupCard?.let { card ->
+            if (e.keyCode == KeyEvent.KEYCODE_BACK) {
+                if (e.action == KeyEvent.ACTION_UP) closePopup()
+                return true
+            }
+            if (card.key(e) || e.keyCode in ARROWS || confirm) return true
+            return super.dispatchKeyEvent(e) // volume and the like
+        }
         if (confirm) {
             if (e.action == KeyEvent.ACTION_DOWN && e.repeatCount == 0) holdFired = false
             if (e.action == KeyEvent.ACTION_DOWN && e.repeatCount > 0) {
@@ -1739,12 +1753,27 @@ class MainActivity : Activity() {
         val apps = alive(lastApp)?.takeIf { it.parent === appRow } ?: appRow.getChildAt(0)
         val top = alive(lastTop) ?: findViewById(R.id.launcherSettings)
         val onShelf = shelf.takeIf { it.visibility == View.VISIBLE }
+        val dateView = findViewById<View>(R.id.date)
+        val wx = findViewById<View>(R.id.weather).takeIf { it.visibility == View.VISIBLE }
         return when {
+            v === dateView -> when (key) { // the date (OK: calendar); the clock under it isn't selectable
+                KeyEvent.KEYCODE_DPAD_LEFT -> findViewById(R.id.launcherSettings)
+                KeyEvent.KEYCODE_DPAD_DOWN -> wx ?: onShelf ?: apps ?: v
+                KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_RIGHT -> v
+                else -> null
+            }
+            v === wx -> when (key) { // the weather (OK: the week's forecast)
+                KeyEvent.KEYCODE_DPAD_UP -> dateView
+                KeyEvent.KEYCODE_DPAD_LEFT -> findViewById(R.id.launcherSettings)
+                KeyEvent.KEYCODE_DPAD_DOWN -> onShelf ?: apps ?: v
+                KeyEvent.KEYCODE_DPAD_RIGHT -> v
+                else -> null
+            }
             v.parent === wifi.parent -> when (key) { // top bar
                 KeyEvent.KEYCODE_DPAD_DOWN -> onShelf ?: apps ?: v // the apps row can be empty (all hidden)
                 KeyEvent.KEYCODE_DPAD_UP -> v
                 KeyEvent.KEYCODE_DPAD_LEFT -> if (v.id == R.id.wifi) v else null
-                KeyEvent.KEYCODE_DPAD_RIGHT -> if (v.id == R.id.launcherSettings) v else null
+                KeyEvent.KEYCODE_DPAD_RIGHT -> if (v.id == R.id.launcherSettings) dateView else null
                 else -> null
             }
             v === shelf -> when (key) { // Top Shelf: Left/Right page through Continue Watching
@@ -2351,6 +2380,100 @@ class MainActivity : Activity() {
         if (settingsScrim.visibility == View.VISIBLE) renderSettings(R.string.updates)
     }
 
+    // ---------- the date and the weather: OK opens a card ----------
+
+    /** The date and the weather line are selectable (the clock between them isn't): a soft glass pill when focused. */
+    private fun setupTopTexts() {
+        for ((id, open) in listOf<Pair<Int, () -> Unit>>(R.id.date to { openCalendar() }, R.id.weather to { openWeather() })) {
+            findViewById<TextView>(id).apply {
+                isFocusable = true
+                isClickable = true
+                val pill = GradientDrawable().apply { cornerRadius = dpf(14f); setColor(0x2EFFFFFF); setStroke(1, 0x40FFFFFF) }
+                val bg = android.graphics.drawable.InsetDrawable(pill, -dp(10), -dp(6), -dp(10), -dp(6)).apply { alpha = 0 }
+                background = bg
+                setOnFocusChangeListener { v, focused ->
+                    ValueAnimator.ofInt(bg.alpha, if (focused) 255 else 0).apply {
+                        duration = Motion.FOCUS_MS
+                        interpolator = Motion.S
+                        addUpdateListener { bg.alpha = it.animatedValue as Int }
+                        start()
+                    }
+                    v.pivotX = v.width.toFloat() // grows from its right edge, where it's aligned
+                    v.pivotY = v.height / 2f
+                    v.animate().scaleX(if (focused) 1.06f else 1f).scaleY(if (focused) 1.06f else 1f)
+                        .setDuration(Motion.FOCUS_MS).setInterpolator(Motion.S).start()
+                }
+                setOnClickListener { open() }
+            }
+        }
+    }
+
+    /**
+     * A card over the home screen, nearly full screen: the home screen still shows round its edges, dimmed. Glass
+     * like the dock (the picture behind, blurred), rising in on the S-curve.
+     */
+    private fun openPopup(card: View, from: View) {
+        if (popup != null) return
+        val radius = dpf(32f)
+        val scrim = FrameLayout(this).apply { setBackgroundColor(0x66000000); alpha = 0f }
+        val panel = FrameLayout(this)
+        val g = GlassView(this).apply { tint = 0x9910101A.toInt(); corner = radius; show(tintSource, 0) }
+        panel.addView(g, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        panel.addView(card, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        Glass.round(panel, radius)
+        panel.foreground = Glass.rim(radius, resources.displayMetrics.density)
+        scrim.addView(panel, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT).apply { setMargins(dp(56), dp(36), dp(56), dp(36)) })
+        findViewById<FrameLayout>(R.id.root).addView(scrim, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+        panel.scaleX = 0.94f; panel.scaleY = 0.94f; panel.alpha = 0f
+        scrim.animate().alpha(1f).setDuration(Motion.FOCUS_MS).setInterpolator(Motion.S).start()
+        panel.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(420).setInterpolator(Motion.S).start()
+        popup = scrim; popupCard = card as PopupCard; popupFrom = from; popupGlass = g
+        homeFocusable(false)
+    }
+
+    private fun closePopup(restore: Boolean = true) {
+        val scrim = popup ?: return
+        popup = null; popupCard = null; popupGlass = null
+        val panel = scrim.getChildAt(0)
+        panel.animate().alpha(0f).scaleX(0.96f).scaleY(0.96f).setDuration(260).setInterpolator(Motion.S).start()
+        scrim.animate().alpha(0f).setDuration(300).setInterpolator(Motion.S)
+            .withEndAction { (scrim.parent as? ViewGroup)?.removeView(scrim) }.start()
+        homeFocusable(true)
+        if (restore) popupFrom?.takeIf { it.isShown }?.requestFocus()
+        popupFrom = null
+    }
+
+    /** The month calendar, with holidays and festivals (see Holidays; read from disk, refreshed now and then). */
+    private fun openCalendar() {
+        val card = CalendarCard(this) { y, m -> Holidays.month(this, prefs, y, m) }
+        openPopup(card, findViewById(R.id.date))
+        io.execute {
+            Holidays.refresh(this, prefs)
+            ui.post { card.reload() }
+        }
+    }
+
+    /** The week's forecast: shows the saved one at once, fetches a fresh one if it's over half an hour old. */
+    private fun openWeather() {
+        val card = WeatherCard(this, prefs.getString("weather", "c") == "f", prefs.getString("geo_city", null)) { weatherWord(it) }
+        openPopup(card, findViewById(R.id.weather))
+        val f = File(filesDir, "forecast.json")
+        val saved = runCatching { Forecast.parse(JSONObject(f.readText())) }.getOrNull()
+        saved?.let { card.setData(it) }
+        if (saved != null && System.currentTimeMillis() - f.lastModified() < 30 * 60_000L) return
+        if (!prefs.contains("geo_lat")) return card.setData(null)
+        io.execute {
+            val fresh = try {
+                val json = getJson(Forecast.url(prefs.getFloat("geo_lat", 0f), prefs.getFloat("geo_lon", 0f)))
+                Forecast.parse(json).also { f.writeText(json.toString()) }
+            } catch (e: Exception) {
+                android.util.Log.w("TvHome", "forecast failed ($e)")
+                null
+            }
+            ui.post { if (fresh != null || saved == null) card.setData(fresh) }
+        }
+    }
+
     // ---------- weather (under the date) ----------
     // Location comes from the public IP (ipwho.is): a TV has no GPS and Android TV no location service.
     // Weather is Open-Meteo. Both are free and keyless. We always fetch Celsius and convert, so
@@ -2684,6 +2807,7 @@ class MainActivity : Activity() {
         shelf = findViewById(R.id.shelf)
         dock = findViewById(R.id.dock)
         findViewById<View>(R.id.scrim).visibility = View.GONE // no vignette: the picture stays as the glass sees it
+        setupTopTexts()
         // Left/Right on the shelf only turns its pages; focus must never drop into the dock on its own. If something
         // takes it there right after a Left/Right, give it back (and log who did, to find the cause).
         window.decorView.viewTreeObserver.addOnGlobalFocusChangeListener { old, new ->
@@ -2836,7 +2960,7 @@ class MainActivity : Activity() {
     /** While focus is elsewhere (the dock), the shelf turns on its own every few seconds, after the remote goes quiet. */
     private val shelfTick = object : Runnable {
         override fun run() {
-            if (watchList.size > 1 && !shelf.hasFocus() && SystemClock.uptimeMillis() - lastKeyAt > 6_000L &&
+            if (watchList.size > 1 && !shelf.hasFocus() && popup == null && SystemClock.uptimeMillis() - lastKeyAt > 6_000L &&
                 settingsScrim.visibility != View.VISIBLE && allApps.visibility != View.VISIBLE
             ) {
                 shelfAt = (shelfAt + 1) % watchList.size
@@ -2858,6 +2982,7 @@ class MainActivity : Activity() {
         playButtonGlass.show(small)
         sheetGlass.show(small)
         drawerGlass.show(small)
+        popupGlass?.show(small)
         tintSource = small
         ui.post { tintTexts() } // after layout, so each text knows where it sits
     }
@@ -3120,7 +3245,7 @@ class MainActivity : Activity() {
      * rearranging the dock, a setup popup): then it waits another round.
      */
     private val idleNews = Runnable {
-        val busy = settingsScrim.visibility == View.VISIBLE || allApps.visibility == View.VISIBLE || editing ||
+        val busy = settingsScrim.visibility == View.VISIBLE || allApps.visibility == View.VISIBLE || editing || popup != null ||
             setupDialog?.isShowing == true || !hasWindowFocus()
         if (busy || News.load(this).isEmpty()) armIdle()
         else startActivity(Intent(this, NewsActivity::class.java))
