@@ -274,8 +274,9 @@ class MainActivity : Activity() {
     private var popupFrom: View? = null
     private var popupGlass: GlassView? = null
     private var lastKeyAt = 0L
-    /** Full-screen artwork with its small copy for the glass, by URI. ~8 MB a picture at 1080p. */
-    private val heroes = object : LruCache<String, Pair<Bitmap, Bitmap>>(44 * 1024 * 1024) {
+    /** Full-screen artwork with its small copy for the glass, by URI. ~8 MB a picture at 1080p: room for the one on
+     *  screen and its two neighbours, no more (the TV has 2.4 GB for everything). */
+    private val heroes = object : LruCache<String, Pair<Bitmap, Bitmap>>(26 * 1024 * 1024) {
         override fun sizeOf(key: String, value: Pair<Bitmap, Bitmap>) = value.first.byteCount + value.second.byteCount
     }
     private val heroWaiters = HashMap<String, MutableList<(Pair<Bitmap, Bitmap>) -> Unit>>() // UI thread only
