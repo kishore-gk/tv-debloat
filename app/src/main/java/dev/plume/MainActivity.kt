@@ -2841,6 +2841,7 @@ class MainActivity : Activity() {
         // Left/Right on the shelf only turns its pages; focus must never drop into the dock on its own. If something
         // takes it there right after a Left/Right, give it back (and log who did, to find the cause).
         window.decorView.viewTreeObserver.addOnGlobalFocusChangeListener { old, new ->
+            expandShelf(new === shelf)
             if (old === shelf && new != null && new !== shelf && lastDir != 0 && shelf.visibility == View.VISIBLE &&
                 SystemClock.uptimeMillis() - lastKeyAt < 800
             ) {
@@ -3418,13 +3419,31 @@ class MainActivity : Activity() {
         shelf.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> shelf.pivotY = shelf.height.toFloat() }
     }
 
+    private var dockF = 0f // the dock's last size, 0 resting .. 1 open (see dockSize)
+    private var shelfFull = 0f // 0 compact .. 1 full size: full only while the shelf itself has focus
+    private var shelfAnim: ValueAnimator? = null
+
+    /** Full size with focus on it; compact otherwise (the dock, the top bar, the date), on the S-curve. */
+    private fun expandShelf(full: Boolean) {
+        val to = if (full) 1f else 0f
+        if (shelfAnim?.isRunning != true && shelfFull == to) return
+        shelfAnim?.cancel()
+        shelfAnim = ValueAnimator.ofFloat(shelfFull, to).apply {
+            duration = 420
+            interpolator = Motion.S
+            addUpdateListener { shelfFull = it.animatedValue as Float; shelfSize(dockF) }
+            start()
+        }
+    }
+
     /**
-     * The shelf answers the dock: full size while the dock rests, and as the dock opens it shrinks towards its
-     * bottom-left corner and rises by exactly what the dock grows, so the Resume row keeps its distance above the
-     * dock. Transform only, like the dock. [f] as in [dockSize].
+     * The shelf is full size only while it has focus; anywhere else it's compact, shrunk towards its bottom-left
+     * corner. As the dock opens it rises by exactly what the dock grows, so the Resume row keeps its distance
+     * above the dock. Transform only, like the dock. [f] as in [dockSize].
      */
     private fun shelfSize(f: Float) {
-        val s = 1f - (1f - SHELF_OPEN_SCALE) * f
+        dockF = f
+        val s = SHELF_OPEN_SCALE + (1f - SHELF_OPEN_SCALE) * shelfFull
         shelf.pivotX = 0f
         shelf.pivotY = shelf.height.toFloat()
         shelf.scaleX = s
@@ -3654,7 +3673,7 @@ class MainActivity : Activity() {
         )
         const val SCREEN_PAD = 24 // dp margin on every edge of the screen
         const val SHELF_GAP = 24 // dp between the shelf's Resume row and the dock
-        const val SHELF_OPEN_SCALE = 0.74f // shelf size while the dock is open
+        const val SHELF_OPEN_SCALE = 0.74f // shelf size while focus is anywhere else (the dock, the top bar)
         const val DOCK_OPEN_PAD = 22 // dp around the tiles with the dock open: room for the lens (LENS_PAD) and its glow
         const val DOCK_REST_PAD = 12 // dp of glass above and below the tiles while the dock rests
         const val DOCK_REST_SCALE = 0.55f // resting dock size; with the smaller padding, ~40% of the open height
