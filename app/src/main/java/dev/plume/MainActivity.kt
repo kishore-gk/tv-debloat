@@ -2382,23 +2382,40 @@ class MainActivity : Activity() {
 
     // ---------- the date and the weather: OK opens a card ----------
 
-    /** The date and the weather line are selectable (the clock between them isn't): a soft glass pill when focused. */
+    /**
+     * The date and the weather line are selectable (the clock between them isn't). Focused, they get what the top
+     * left buttons get: a solid white capsule with dark text, no glass (cheaper to animate). The capsule's room is
+     * real padding, taken back with negative margins, so nothing moves when it appears.
+     */
     private fun setupTopTexts() {
+        val ph = dp(14); val pv = dp(7)
         for ((id, open) in listOf<Pair<Int, () -> Unit>>(R.id.date to { openCalendar() }, R.id.weather to { openWeather() })) {
             findViewById<TextView>(id).apply {
                 isFocusable = true
                 isClickable = true
-                val pill = GradientDrawable().apply { cornerRadius = dpf(14f); setColor(0x2EFFFFFF); setStroke(1, 0x40FFFFFF) }
-                val bg = android.graphics.drawable.InsetDrawable(pill, -dp(10), -dp(6), -dp(10), -dp(6)).apply { alpha = 0 }
-                background = bg
+                val pill = GradientDrawable().apply { cornerRadius = dpf(100f); setColor(0xFFF5F5F7.toInt()); alpha = 0 }
+                background = pill
+                setPadding(ph, pv, ph, pv)
+                (layoutParams as ViewGroup.MarginLayoutParams).apply { marginEnd -= ph; topMargin -= pv; bottomMargin -= pv }
                 setOnFocusChangeListener { v, focused ->
-                    ValueAnimator.ofInt(bg.alpha, if (focused) 255 else 0).apply {
+                    val t = v as TextView
+                    ValueAnimator.ofInt(pill.alpha, if (focused) 255 else 0).apply {
                         duration = Motion.FOCUS_MS
                         interpolator = Motion.S
-                        addUpdateListener { bg.alpha = it.animatedValue as Int }
+                        addUpdateListener { pill.alpha = it.animatedValue as Int }
                         start()
                     }
-                    v.pivotX = v.width.toFloat() // grows from its right edge, where it's aligned
+                    if (focused) {
+                        tintAnims[t]?.cancel()
+                        t.setShadowLayer(0f, 0f, 0f, 0)
+                        tintAnims[t] = ValueAnimator.ofArgb(t.currentTextColor, 0xFF0A0A0A.toInt()).apply {
+                            duration = Motion.FOCUS_MS
+                            interpolator = Motion.S
+                            addUpdateListener { t.setTextColor(it.animatedValue as Int) }
+                            start()
+                        }
+                    } else tintTexts() // back to the colour taken from the picture
+                    v.pivotX = v.width.toFloat() - ph // grows from the text's right edge, where it's aligned
                     v.pivotY = v.height / 2f
                     v.animate().scaleX(if (focused) 1.06f else 1f).scaleY(if (focused) 1.06f else 1f)
                         .setDuration(Motion.FOCUS_MS).setInterpolator(Motion.S).start()
@@ -3016,6 +3033,7 @@ class MainActivity : Activity() {
             val ink = tintFor(bg)
             val light = relativeLuminance(ink) > 0.5
             for (v in views) {
+                if (v.isFocused) continue // dark on its white capsule (see setupTopTexts)
                 v.setShadowLayer(dpf(8f), 0f, dpf(1f), if (light) 0x59000000 else 0x40FFFFFF)
                 tintAnims[v]?.cancel()
                 if (v.currentTextColor == ink) continue

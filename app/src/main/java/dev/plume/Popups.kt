@@ -73,7 +73,7 @@ private fun tween(ms: Long, update: (Float) -> Unit): ValueAnimator = ValueAnima
 /**
  * A month at a glance: the grid on the left, the chosen day and this month's holidays on the right. Arrows move
  * a day or a week (crossing into the next or last month as you go), channel or page keys jump a month, OK comes
- * back to today. The highlight glides between days; months slide in.
+ * back to today. The highlight glides between days; the weeks scroll into the next month, carrying it along.
  */
 internal class CalendarCard(c: Context, private val holidays: (year: Int, month: Int) -> List<Holiday>) : View(c), PopupCard {
     private val ink = Ink(c)
@@ -81,13 +81,16 @@ internal class CalendarCard(c: Context, private val holidays: (year: Int, month:
     private val today = LocalDate.now()
     private var sel = today
     private var shown = YearMonth.from(today)
-    private var prev: YearMonth? = null
-    private var slide = 1f
-    private var slideDir = 0
-    private var hx = -1f
+    private var prev: YearMonth? = null // the month scrolling away
+    private var monthK = 1f // 0..1 from [prev] to [shown]: titles cross-fade, in-month days brighten
+    private var monthDir = 0
+    private var scroll = 0f // rows the grid is still shifted by; eases to 0 (the weeks scroll up or down)
+    private var hx = -1f // the highlight, in cells of [shown]'s grid
     private var hy = -1f
     private var moveAnim: ValueAnimator? = null
-    private var slideAnim: ValueAnimator? = null
+    private var prevSel: LocalDate? = null // the day panel cross-fades from this
+    private var panelK = 1f
+    private var panelAnim: ValueAnimator? = null
     private val firstDow = WeekFields.of(Locale.getDefault()).firstDayOfWeek
     private val months = HashMap<YearMonth, List<Holiday>>()
 
@@ -144,26 +147,41 @@ internal class CalendarCard(c: Context, private val holidays: (year: Int, month:
         return true
     }
 
+    /**
+     * The grid is one long run of weeks: crossing into another month scrolls it (up when going forward, down when
+     * going back) and the highlight rides along with the day it was on, gliding to the new one as the weeks settle.
+     */
     private fun go(next: LocalDate) {
         val ym = YearMonth.from(next)
         val from = sel
         sel = next
-        val i = cell(next, ym)
-        if (ym != shown) { // a new month slides in; the highlight starts where it lands
-            prev = shown
-            slideDir = if (ym.isAfter(shown)) 1 else -1
-            shown = ym
-            moveAnim?.cancel()
-            hx = (i % 7).toFloat(); hy = (i / 7).toFloat()
-            slideAnim?.cancel()
-            slide = 0f
-            slideAnim = tween(Motion.FOCUS_MS + 80) { slide = it; invalidate() }
-            return
+        if (from != next) {
+            prevSel = from
+            panelAnim?.cancel()
+            panelK = 0f
+            panelAnim = tween(260) { panelK = it; invalidate() }
         }
-        if (from == next) return
-        val x0 = hx; val y0 = hy; val x1 = (i % 7).toFloat(); val y1 = (i / 7).toFloat()
+        var s0 = scroll; var hx0 = hx; var hy0 = hy; var m0 = monthK
+        if (ym != shown) {
+            val rows = (ChronoUnit.DAYS.between(gridStart(shown), gridStart(ym)) / 7).toFloat()
+            val screenY = hy + scroll // where the highlight is on screen now
+            s0 = (scroll + rows).coerceIn(-7f, 7f)
+            hy0 = screenY - s0
+            monthDir = if (ym.isAfter(shown)) 1 else -1
+            prev = shown
+            shown = ym
+            m0 = 0f
+        }
+        val i = cell(next, shown)
+        val hx1 = (i % 7).toFloat(); val hy1 = (i / 7).toFloat()
         moveAnim?.cancel()
-        moveAnim = tween(Motion.FOCUS_MS) { k -> hx = x0 + (x1 - x0) * k; hy = y0 + (y1 - y0) * k; invalidate() }
+        moveAnim = tween(Motion.FOCUS_MS + if (m0 < 1f) 100 else 0) { k ->
+            scroll = s0 * (1f - k)
+            hx = hx0 + (hx1 - hx0) * k
+            hy = hy0 + (hy1 - hy0) * k
+            monthK = m0 + (1f - m0) * k
+            invalidate()
+        }
     }
 
     override fun onDraw(c: Canvas) {
@@ -176,72 +194,97 @@ internal class CalendarCard(c: Context, private val holidays: (year: Int, month:
         val top = pad + 84f * u
         val ch = (h - pad - top) / 6f
 
-        // weekday names stay put while months slide
+        // the month's name: the old one lifts away as the new one settles in
+        val dy = 10f * u
+        prev?.takeIf { monthK < 1f }?.let { drawTitle(c, it, 1f - monthK, -monthDir * dy * monthK, gridL, pad) }
+        drawTitle(c, shown, if (prev == null) 1f else monthK, monthDir * dy * (1f - monthK), gridL, pad)
+
+        // weekday names stay put while the weeks scroll
         for (col in 0 until 7) {
             val d = firstDow.plus(col.toLong())
             c.drawText(fmtShortDay.format(LocalDate.of(2024, 1, 1).with(java.time.temporal.TemporalAdjusters.nextOrSame(d))).uppercase(),
                 gridL + cw * (col + 0.5f), pad + 68f * u, weekday)
         }
+        drawGrid(c, gridL, gridR, top, cw, ch)
 
-        val shift = 28f * u
-        prev?.takeIf { slide < 1f }?.let { drawMonth(c, it, 1f - slide, -slideDir * shift * slide, gridL, top, cw, ch, pad, false) }
-        drawMonth(c, shown, slide, slideDir * shift * (1f - slide), gridL, top, cw, ch, pad, true)
-
-        // the divider and the day panel
+        // the divider and the day panel (cross-fading to the new day)
         fill.color = 0x1FFFFFFF
         c.drawRect(split, pad, split + 1f * u, h - pad, fill)
-        drawDay(c, split + 32f * u, w - pad, pad, h - pad)
+        val px = split + 32f * u
+        prevSel?.takeIf { panelK < 1f }?.let { old ->
+            val a = (1f - 2f * panelK).coerceAtLeast(0f)
+            if (a > 0f) { val sv = c.saveLayerAlpha(px - 8f * u, 0f, w, h, (a * 255).roundToInt()); drawDay(c, old, px, w - pad, pad, h - pad); c.restoreToCount(sv) }
+        }
+        if (panelK < 1f) {
+            val sv = c.saveLayerAlpha(px - 8f * u, 0f, w, h, (panelK * 255).roundToInt()); drawDay(c, sel, px, w - pad, pad, h - pad); c.restoreToCount(sv)
+        } else drawDay(c, sel, px, w - pad, pad, h - pad)
+        c.drawText(context.getString(R.string.cal_hint), w - pad, h - pad + 14f * u, hint)
     }
 
-    private fun drawMonth(c: Canvas, ym: YearMonth, alpha: Float, dx: Float, gridL: Float, top: Float, cw: Float, ch: Float, pad: Float, current: Boolean) {
+    private fun drawTitle(c: Canvas, ym: YearMonth, alpha: Float, dy: Float, x: Float, pad: Float) {
         val a = (alpha * 255).roundToInt()
         if (a <= 0) return
-        c.save()
-        c.translate(dx, 0f)
-        // title: "October 2026"
         val month = fmtMonth.format(ym).replaceFirstChar { it.titlecase(Locale.getDefault()) }
         title.alpha = a; titleYear.alpha = (a * 0.65f).toInt()
-        c.drawText(month, gridL, pad + 30f * u, title)
-        c.drawText("  ${ym.year}", gridL + title.measureText(month), pad + 30f * u, titleYear)
-        // highlight under the chosen day
-        if (current) {
-            val cx = gridL + cw * (hx + 0.5f); val cy = top + ch * (hy + 0.5f)
+        c.drawText(month, x, pad + 30f * u + dy, title)
+        c.drawText("  ${ym.year}", x + title.measureText(month), pad + 30f * u + dy, titleYear)
+    }
+
+    /** Days in the shown month bright, others dim; while months change, that eases from the old month to the new. */
+    private fun inMonth(d: LocalDate): Float {
+        val now = if (YearMonth.from(d) == shown) 1f else 0.28f
+        val before = if (prev != null && YearMonth.from(d) == prev) 1f else 0.28f
+        return if (prev == null) now else before + (now - before) * monthK
+    }
+
+    private fun drawGrid(c: Canvas, gridL: Float, gridR: Float, top: Float, cw: Float, ch: Float) {
+        c.save()
+        c.clipRect(gridL - 12f * u, top, gridR + 12f * u, top + ch * 6f)
+        // highlight under the chosen day, moving with the weeks
+        run {
+            val cx = gridL + cw * (hx + 0.5f); val cy = top + ch * (hy + scroll + 0.5f)
             val hw = min(cw, ch * 1.25f) / 2f - 3f * u; val hh = ch / 2f - 3f * u
             r.set(cx - hw, cy - hh, cx + hw, cy + hh)
-            fill.color = 0x2EFFFFFF; fill.alpha = (0x2E * alpha).toInt()
-            stroke.alpha = (0x40 * alpha).toInt()
+            fill.color = 0x2EFFFFFF
+            stroke.alpha = 0x40
             c.drawRoundRect(r, 14f * u, 14f * u, fill)
             c.drawRoundRect(r, 14f * u, 14f * u, stroke)
         }
-        val list = hols(ym)
-        val start = gridStart(ym)
-        for (i in 0 until 42) {
-            val d = start.plusDays(i.toLong())
-            val cx = gridL + cw * (i % 7 + 0.5f); val cy = top + ch * (i / 7 + 0.5f)
-            val inMonth = d.monthValue == ym.monthValue
-            val dayHols = if (inMonth) list.filter { it.date == d } else emptyList()
-            val k = if (inMonth) 1f else 0.28f
-            val base = cy + 7f * u
-            if (d == today) {
-                fill.color = Ink.WHITE; fill.alpha = (255 * alpha * k).toInt()
-                c.drawCircle(cx, cy, min(cw, ch) * 0.34f, fill)
-                numToday.alpha = (255 * alpha * k).toInt()
-                c.drawText(d.dayOfMonth.toString(), cx, base, numToday)
-            } else {
-                num.color = if (dayHols.any { it.public }) Ink.AMBER else Ink.WHITE
-                num.alpha = (255 * alpha * k).toInt()
-                c.drawText(d.dayOfMonth.toString(), cx, base, num)
-            }
-            if (dayHols.isNotEmpty()) { // a dot under the number: amber for a day off, white for a festival
-                fill.color = if (dayHols.any { it.public }) Ink.AMBER else Ink.WHITE
-                fill.alpha = (fill.alpha * alpha * (if (dayHols.any { it.public }) 1f else 0.7f)).toInt()
-                c.drawCircle(cx, cy + min(cw, ch) * 0.34f + 5f * u, 2.5f * u, fill)
+        val start = gridStart(shown)
+        val first = kotlin.math.floor(-scroll).toInt() - 1
+        val last = kotlin.math.ceil(6f - scroll).toInt()
+        for (row in first..last) {
+            val y = row + scroll // rows on screen, 0..6
+            val vis = min(y + 1f, 6f - y).coerceIn(0f, 1f) // weeks fade as they slide past the edges
+            if (vis <= 0f) continue
+            for (col in 0 until 7) {
+                val d = start.plusDays((row * 7 + col).toLong())
+                val cx = gridL + cw * (col + 0.5f); val cy = top + ch * (y + 0.5f)
+                val k = inMonth(d) * vis
+                val dayHols = hols(YearMonth.from(d)).filter { it.date == d }
+                val public = dayHols.any { it.public }
+                val base = cy + 7f * u
+                if (d == today) {
+                    fill.color = Ink.WHITE; fill.alpha = (255 * k).toInt()
+                    c.drawCircle(cx, cy, min(cw, ch) * 0.34f, fill)
+                    numToday.alpha = (255 * k).toInt()
+                    c.drawText(d.dayOfMonth.toString(), cx, base, numToday)
+                } else {
+                    num.color = if (public) Ink.AMBER else Ink.WHITE
+                    num.alpha = (255 * k).toInt()
+                    c.drawText(d.dayOfMonth.toString(), cx, base, num)
+                }
+                if (dayHols.isNotEmpty()) { // a dot under the number: amber for a day off, white for a festival
+                    fill.color = if (public) Ink.AMBER else Ink.WHITE
+                    fill.alpha = (255 * k * (if (public) 1f else 0.7f)).toInt()
+                    c.drawCircle(cx, cy + min(cw, ch) * 0.34f + 5f * u, 2.5f * u, fill)
+                }
             }
         }
         c.restore()
     }
 
-    private fun drawDay(c: Canvas, x: Float, right: Float, top: Float, bottom: Float) {
+    private fun drawDay(c: Canvas, sel: LocalDate, x: Float, right: Float, top: Float, bottom: Float) {
         val w = right - x
         var y = top + 16f * u
         c.drawText(fmtWeekday.format(sel).replaceFirstChar { it.titlecase(Locale.getDefault()) }, x, y, dayName)
@@ -260,7 +303,7 @@ internal class CalendarCard(c: Context, private val holidays: (year: Int, month:
         c.drawText(relText, x, y, rel)
         y += 28f * u
 
-        val month = hols(shown)
+        val month = hols(YearMonth.from(sel))
         for (hol in month.filter { it.date == sel }) {
             fill.color = if (hol.public) Ink.AMBER else Ink.WHITE
             c.drawCircle(x + 4f * u, y + 9f * u, 4f * u, fill)
@@ -293,7 +336,6 @@ internal class CalendarCard(c: Context, private val holidays: (year: Int, month:
                 c.drawText(TextUtils.ellipsize(hol.name, rowName, w - 32f * u, TextUtils.TruncateAt.END).toString(), x + 32f * u, by, rowName)
             }
         }
-        c.drawText(res.getString(R.string.cal_hint), right, bottom + 14f * u, hint)
     }
 
     companion object {
@@ -481,9 +523,9 @@ internal class WeatherCard(
         // the chosen day, sliding in
         val top = stripTop + stripH + 30f * u
         val bottom = h - pad - 34f * u
-        val shift = 24f * u
-        if (k < 1f) drawDay(c, f, prevDay, 1f - k, -dir * shift * k, pad, w - pad, top, bottom)
-        drawDay(c, f, day, k, dir * shift * (1f - k), pad, w - pad, top, bottom)
+        // in place: the old day fades out quickly, the new one fades in
+        if (k < 1f) drawDay(c, f, prevDay, (1f - 2f * k).coerceAtLeast(0f), 0f, pad, w - pad, top, bottom)
+        drawDay(c, f, day, k, 0f, pad, w - pad, top, bottom)
     }
 
     private fun drawDay(c: Canvas, f: Forecast, i: Int, alpha: Float, dx: Float, left: Float, right: Float, top: Float, bottom: Float) {
