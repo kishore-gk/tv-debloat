@@ -6,7 +6,7 @@ import android.media.SoundPool
 import android.provider.Settings
 
 /**
- * Plume's own interface sounds, in place of Android's stock click: a soft, warm synth blip in a big room to move, a blooming fifth to
+ * Plume's own interface sounds, in place of Android's stock click: a short thud to move, a blooming fifth to
  * select, and a muted low thud at the end of a row. Respects the TV's "Sound effects" setting.
  * (The sounds are generated, not recordings: res/raw/nav_*.wav.)
  */
