@@ -1,3 +1,7 @@
+> **This is a modified fork** of Plume Launcher, made for a TCL Google TV: a glass, tvOS-style home screen,
+> a news screen, calendar and weather cards and more. See [CHANGES.md](CHANGES.md) for what changed and
+> [../GUIDE.md](../GUIDE.md) for how to build and install it. The original README follows.
+
 <h1 align="center">Plume Launcher</h1>
 
 <p align="center">
