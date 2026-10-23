@@ -2804,14 +2804,32 @@ class MainActivity : Activity() {
         watchList.getOrNull(shelfAt - 1)?.let { prefetchHero(it) }
     }
 
-    /** iOS page dots: one per item (up to 12), the current one a longer pill. */
+    /** First item shown in the dots window (the dots show up to [DOTS_MAX] items at a time). */
+    private var dotsStart = 0
+
+    /**
+     * iOS page dots: the current one a longer pill. With more items than fit, the dots are a sliding window:
+     * the pill walks along until it is one from either end, then the window slides instead, and the end dot
+     * shrinks to say "there's more this way". The pill reaches the very last dot only on the last item.
+     */
     private fun showDots() {
         val row = findViewById<LinearLayout>(R.id.shelfDots)
         row.removeAllViews()
-        val n = minOf(watchList.size, 12)
-        if (n < 2) return
+        val total = watchList.size
+        if (total < 2) return
+        val n = minOf(total, DOTS_MAX)
+        val at = shelfAt.coerceIn(0, total - 1)
+        // keep one dot of room on each side of the pill, unless that side really is the end
+        if (at > dotsStart + n - 2) dotsStart = at - (n - 2)
+        if (at < dotsStart + 1) dotsStart = at - 1
+        dotsStart = dotsStart.coerceIn(0, total - n)
+        val moreBefore = dotsStart > 0
+        val moreAfter = dotsStart + n < total
         for (i in 0 until n) {
-            val on = i == shelfAt.coerceAtMost(n - 1)
+            val item = dotsStart + i
+            val on = item == at
+            val small = !on && (i == 0 && moreBefore || i == n - 1 && moreAfter)
+            val size = if (small) 4 else 6
             row.addView(View(this).apply {
                 background = GradientDrawable().apply {
                     cornerRadius = dpf(3f)
@@ -2819,7 +2837,10 @@ class MainActivity : Activity() {
                     setStroke(1, 0x40000000) // a fine dark edge, so the dots show on white pictures too
                 }
                 elevation = dpf(2f)
-            }, LinearLayout.LayoutParams(dp(if (on) 18 else 6), dp(6)).apply { if (i > 0) marginStart = dp(6) })
+            }, LinearLayout.LayoutParams(dp(if (on) 18 else size), dp(size)).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                if (i > 0) marginStart = dp(6)
+            })
         }
     }
 
@@ -3504,6 +3525,7 @@ class MainActivity : Activity() {
         const val DOCK_OPEN_PAD = 22 // dp around the tiles with the dock open: room for the lens (LENS_PAD) and its glow
         const val DOCK_REST_PAD = 12 // dp of glass above and below the tiles while the dock rests
         const val DOCK_REST_SCALE = 0.55f // resting dock size; with the smaller padding, ~40% of the open height
+        const val DOTS_MAX = 7
         val SHELF_KEYS = setOf(KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT)
         val ARROWS = setOf(KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN)
         const val HERO_MIN_WIDTH = 1280
