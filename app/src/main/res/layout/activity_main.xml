@@ -237,13 +237,12 @@
                 </dev.plume.GlassFrame>
 
                 <!-- One dot per item, the current one long (iOS page control). -->
-                <LinearLayout
+                <dev.plume.PageDots
                     android:id="@+id/shelfDots"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_marginStart="20dp"
-                    android:gravity="center_vertical"
-                    android:orientation="horizontal" />
+                    android:layout_gravity="center_vertical"
+                    android:layout_marginStart="18dp" />
             </LinearLayout>
         </LinearLayout>
 

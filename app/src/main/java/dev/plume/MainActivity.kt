@@ -2804,45 +2804,8 @@ class MainActivity : Activity() {
         watchList.getOrNull(shelfAt - 1)?.let { prefetchHero(it) }
     }
 
-    /** First item shown in the dots window (the dots show up to [DOTS_MAX] items at a time). */
-    private var dotsStart = 0
-
-    /**
-     * iOS page dots: the current one a longer pill. With more items than fit, the dots are a sliding window:
-     * the pill walks along until it is one from either end, then the window slides instead, and the end dot
-     * shrinks to say "there's more this way". The pill reaches the very last dot only on the last item.
-     */
-    private fun showDots() {
-        val row = findViewById<LinearLayout>(R.id.shelfDots)
-        row.removeAllViews()
-        val total = watchList.size
-        if (total < 2) return
-        val n = minOf(total, DOTS_MAX)
-        val at = shelfAt.coerceIn(0, total - 1)
-        // keep one dot of room on each side of the pill, unless that side really is the end
-        if (at > dotsStart + n - 2) dotsStart = at - (n - 2)
-        if (at < dotsStart + 1) dotsStart = at - 1
-        dotsStart = dotsStart.coerceIn(0, total - n)
-        val moreBefore = dotsStart > 0
-        val moreAfter = dotsStart + n < total
-        for (i in 0 until n) {
-            val item = dotsStart + i
-            val on = item == at
-            val small = !on && (i == 0 && moreBefore || i == n - 1 && moreAfter)
-            val size = if (small) 4 else 6
-            row.addView(View(this).apply {
-                background = GradientDrawable().apply {
-                    cornerRadius = dpf(3f)
-                    setColor(if (on) 0xFFFFFFFF.toInt() else 0x8CFFFFFF.toInt())
-                    setStroke(1, 0x40000000) // a fine dark edge, so the dots show on white pictures too
-                }
-                elevation = dpf(2f)
-            }, LinearLayout.LayoutParams(dp(if (on) 18 else size), dp(size)).apply {
-                gravity = Gravity.CENTER_VERTICAL
-                if (i > 0) marginStart = dp(6)
-            })
-        }
-    }
+    /** iOS page dots, sliding to show there are more shows than dots (see PageDots). */
+    private fun showDots() = findViewById<PageDots>(R.id.shelfDots).run { max = DOTS_MAX; set(watchList.size, shelfAt) }
 
     /** Whether the last Left/Right on the shelf turned the page (false: it was already at the end). */
     private var shelfMoved = false
